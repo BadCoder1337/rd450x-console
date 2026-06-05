@@ -56,24 +56,41 @@ single-threaded interactive console with cross-platform raw-terminal handling.
 > not even present to the OS. This is the practical reason the project's KVM
 > phase (BIOS access) may be needed to finish wiring up the serial console.
 
-### Status: console brought up (2026-06-05)
+### Resolution — full POST + BIOS Setup + OS console over SOL (working, 2026-06-05)
 
-Both layers are now configured on `pve`, so SOL carries a real console:
+> The diagnosis above briefly mis-mapped the SOL port (it is **COM0**, not
+> COM1) and wrongly concluded the OS console was unreachable. Corrected below.
 
-1. **BIOS:** Console Redirection enabled on **COM1** (= `0x2F8` = Linux
-   `ttyS1`), 115200 / 8N1 / Flow Control None / VT-UTF8 / *Redirection After
-   POST = Always Enable*. Verified live — the Aptio Setup screen renders over
-   SOL. (The external DB-9 is COM0 = `0x3F8` = `ttyS0` and is **not** the SOL.)
-2. **Proxmox OS (GRUB host):**
-   - `serial-getty@ttyS1.service` enabled → **login prompt over SOL now**.
-   - `/etc/default/grub`: `GRUB_CMDLINE_LINUX="console=tty1 console=ttyS1,115200n8"`,
-     `GRUB_TERMINAL="console serial"`,
-     `GRUB_SERIAL_COMMAND="serial --unit=1 --speed=115200 ..."` → `update-grub`.
-     After the next reboot the GRUB menu and kernel boot messages also appear
-     over SOL. (`update-grub` also added a *UEFI Firmware Settings* menu entry,
-     so BIOS Setup becomes reachable from GRUB over serial.)
+**The SOL port is `COM0` — labelled `COM0(SOL)` in the AMI BIOS — which is Linux
+`ttyS0` (`0x3F8`).** The BMC SOL is a **real hardware UART bridge** on that port,
+*not* a firmware-redirection-only sink. The earlier "0 bytes from the OS" tests
+failed because BIOS Console Redirection on COM0 was set to **Always Enable**, so
+the BIOS held the UART (via SMM) during OS runtime and blocked the OS↔BMC path.
+Releasing the port after the boot loader fixes it.
 
-Connect with `rd450x-console` and press Enter to reach `pve login:`.
+**Working BIOS config (`COM0(SOL)`):**
+Console Redirection **Enabled**, **Redirection After BIOS POST = BootLoader**
+(redirect through POST + loader, then hand the UART to the OS), 115200 / 8 /
+None / 1, Flow Control None, Terminal Type VT-UTF8.
+
+**Working Proxmox config:** `GRUB_CMDLINE_LINUX="console=tty1 console=ttyS0,115200n8"`
+(+ `update-grub`) and `serial-getty@ttyS0` enabled.
+
+**Result:** POST, BIOS Setup (rich VT-UTF8 UI), the boot loader, kernel boot
+messages, and the `pve login:` prompt are **all** carried over SOL. Connect with
+`rd450x-console` and press Enter.
+
+> **Pitfall:** do **not** point the kernel at `ttyS1`/`0x2F8` — that is *not* the
+> SOL port, and BIOS `BootLoader` mode disables it after the loader, so a kernel
+> `console=ttyS1` **hangs the boot** at "Loading initial ramdisk". Use `ttyS0`.
+
+**Client note (Windows):** rendering a full-screen TUI (BIOS Setup) needs care.
+A naive single-threaded loop freezes on big repaints because Python console
+writes can hold the GIL. The client therefore renders on a dedicated thread and
+writes via `WriteConsoleW` (ctypes releases the GIL), keeps sends non-blocking,
+and disables QuickEdit. This Python/GIL friction is the motivation for a planned
+clean **Go** rewrite (goroutines + channels map naturally onto receive / render
+/ input).
 
 ## Setup
 

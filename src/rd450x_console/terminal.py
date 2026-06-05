@@ -16,6 +16,7 @@ through ``select``; arrow keys already arrive as escape sequences.
 
 from __future__ import annotations
 
+import codecs
 import os
 import sys
 
@@ -39,6 +40,8 @@ class _WindowsTerminal:
     ENABLE_LINE_INPUT = 0x0002
     ENABLE_ECHO_INPUT = 0x0004
     ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+    ENABLE_QUICK_EDIT_MODE = 0x0040  # click-drag selects text AND pauses output
+    ENABLE_EXTENDED_FLAGS = 0x0080   # required for the QuickEdit bit to apply
     ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
     STD_INPUT_HANDLE = -10
     STD_OUTPUT_HANDLE = -11
@@ -64,12 +67,31 @@ class _WindowsTerminal:
 
     def __init__(self) -> None:
         import ctypes
+        from ctypes import wintypes
 
         self._k = __import__("msvcrt")
         self._ctypes = ctypes
         self._kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         self._saved_in = None
         self._saved_out = None
+
+        # Incremental UTF-8 decoder so a multi-byte char (BIOS box-drawing) split
+        # across SOL packets is not mangled at a write boundary.
+        self._dec = codecs.getincrementaldecoder("utf-8")("replace")
+        # Write via WriteConsoleW (ctypes) rather than sys.stdout: ctypes
+        # releases the GIL around the call, so a slow console render on the
+        # render thread cannot starve the network + input loop. (Plain
+        # sys.stdout console writes can hold the GIL and freeze everything.)
+        self._write_console = self._kernel32.WriteConsoleW
+        self._write_console.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        self._write_console.restype = wintypes.BOOL
+        self._nwritten = wintypes.DWORD()
 
     def _get_mode(self, handle):
         mode = self._ctypes.c_uint32()
@@ -88,12 +110,17 @@ class _WindowsTerminal:
         k.SetConsoleMode(self._hout, out_mode)
 
         # Input: raw. msvcrt.getch() bypasses line discipline anyway, but we
-        # also clear the cooked-mode flags so nothing is echoed or pre-chewed.
+        # also clear the cooked-mode flags so nothing is echoed or pre-chewed,
+        # and disable QuickEdit so a stray click in the window cannot freeze
+        # output mid-session. ENABLE_EXTENDED_FLAGS must be set for the
+        # QuickEdit change to take effect.
         in_mode = self._saved_in & ~(
             self.ENABLE_LINE_INPUT
             | self.ENABLE_ECHO_INPUT
             | self.ENABLE_PROCESSED_INPUT
+            | self.ENABLE_QUICK_EDIT_MODE
         )
+        in_mode |= self.ENABLE_EXTENDED_FLAGS
         k.SetConsoleMode(self._hin, in_mode)
         self.write(ENTER_FULLSCREEN)
         return self
@@ -122,8 +149,27 @@ class _WindowsTerminal:
         return bytes(out)
 
     def write(self, data: bytes) -> None:
-        sys.stdout.buffer.write(data)
-        sys.stdout.buffer.flush()
+        text = self._dec.decode(data)
+        if not text:
+            return
+        handle = getattr(self, "_hout", None)
+        if handle is None:  # before __enter__ / not a console
+            sys.stdout.buffer.write(text.encode("utf-8", "replace"))
+            sys.stdout.buffer.flush()
+            return
+        i, n, chunk = 0, len(text), 8000
+        while i < n:
+            part = text[i:i + chunk]
+            ok = self._write_console(
+                handle, part, len(part),
+                self._ctypes.byref(self._nwritten), None,
+            )
+            if not ok:  # redirected / not a console -- fall back to stdout
+                sys.stdout.buffer.write(part.encode("utf-8", "replace"))
+                sys.stdout.buffer.flush()
+                i += len(part)
+                continue
+            i += self._nwritten.value or len(part)
 
 
 class _PosixTerminal:
