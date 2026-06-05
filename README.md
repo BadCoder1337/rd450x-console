@@ -56,6 +56,25 @@ single-threaded interactive console with cross-platform raw-terminal handling.
 > not even present to the OS. This is the practical reason the project's KVM
 > phase (BIOS access) may be needed to finish wiring up the serial console.
 
+### Status: console brought up (2026-06-05)
+
+Both layers are now configured on `pve`, so SOL carries a real console:
+
+1. **BIOS:** Console Redirection enabled on **COM1** (= `0x2F8` = Linux
+   `ttyS1`), 115200 / 8N1 / Flow Control None / VT-UTF8 / *Redirection After
+   POST = Always Enable*. Verified live — the Aptio Setup screen renders over
+   SOL. (The external DB-9 is COM0 = `0x3F8` = `ttyS0` and is **not** the SOL.)
+2. **Proxmox OS (GRUB host):**
+   - `serial-getty@ttyS1.service` enabled → **login prompt over SOL now**.
+   - `/etc/default/grub`: `GRUB_CMDLINE_LINUX="console=tty1 console=ttyS1,115200n8"`,
+     `GRUB_TERMINAL="console serial"`,
+     `GRUB_SERIAL_COMMAND="serial --unit=1 --speed=115200 ..."` → `update-grub`.
+     After the next reboot the GRUB menu and kernel boot messages also appear
+     over SOL. (`update-grub` also added a *UEFI Firmware Settings* menu entry,
+     so BIOS Setup becomes reachable from GRUB over serial.)
+
+Connect with `rd450x-console` and press Enter to reach `pve login:`.
+
 ## Setup
 
 Requires Python 3.9+.
