@@ -1,0 +1,25 @@
+[project]
+name = "rd450x-console"
+version = "0.1.0"
+description = "Modern Serial-over-LAN console for the Lenovo RD450X (AMI MegaRAC BMC), replacing the legacy JViewer-SOC Java Web Start client."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Anton Musin" }]
+dependencies = [
+    "pyghmi>=1.5",
+]
+
+[project.optional-dependencies]
+dotenv = ["python-dotenv>=1.0"]
+
+[project.scripts]
+rd450x-console = "rd450x_console.cli:main"
+rd450x-sol = "rd450x_console.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
