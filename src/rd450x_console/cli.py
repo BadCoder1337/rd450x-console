@@ -44,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Escape/attention key, e.g. 'Ctrl-]' (default), '^x', or '0x1d'.",
     )
     p.add_argument(
+        "--force",
+        action="store_true",
+        help="Take over a stale SOL session held by another client "
+        "(deactivates the existing payload first).",
+    )
+    p.add_argument(
         "--info",
         action="store_true",
         help="Print BMC device info and power state, then exit (no console).",
@@ -77,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.info:
             return _show_info(config)
-        return SerialConsole(config, escape=args.escape).run()
+        return SerialConsole(config, escape=args.escape, force=args.force).run()
     except KeyboardInterrupt:
         return 130
 

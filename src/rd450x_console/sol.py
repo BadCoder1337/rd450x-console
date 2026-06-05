@@ -70,9 +70,12 @@ class _EscapeHandler:
 
 
 class SerialConsole:
-    def __init__(self, config: Config, escape: int = DEFAULT_ESCAPE) -> None:
+    def __init__(
+        self, config: Config, escape: int = DEFAULT_ESCAPE, force: bool = False
+    ) -> None:
         self.config = config
         self.escape = escape
+        self.force = force
         self._term = None
         self._console = None
         self._stop = False
@@ -137,7 +140,7 @@ class SerialConsole:
                 password=cfg.password,
                 port=cfg.port,
                 iohandler=self._on_output,
-                force=False,
+                force=self.force,
             )
         except IpmiException as exc:
             print(f"Failed to open SOL session: {exc}", file=sys.stderr)
@@ -145,6 +148,12 @@ class SerialConsole:
 
         if self._error:
             print(f"Could not activate SOL: {self._error}", file=sys.stderr)
+            if not self.force and "another client" in self._error.lower():
+                print(
+                    "Hint: a stale SOL session is held on the BMC. "
+                    "Re-run with --force to take it over.",
+                    file=sys.stderr,
+                )
             return 1
 
         print(
