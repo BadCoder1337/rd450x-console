@@ -13,3 +13,6 @@ dist/
 # reverse-engineering artifacts (downloaded jars / decompiled sources)
 re/
 *.jar
+
+# go build output
+/bin/
