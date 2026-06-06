@@ -13,11 +13,12 @@ import (
 
 // RunCommand implements `rd450x-console kvm`.
 //
-// Current status (walking skeleton): it starts the web server with the embedded
-// noVNC client and renders an animated test pattern so the noVNC↔RFB pipeline is
-// verifiable end-to-end. In parallel, if credentials are present, it connects to
-// the BMC and completes the IVTP handshake, logging the incoming video-fragment
-// stream. Wiring decoded BMC frames into the RFB source lands with the codec.
+// It starts a local web server hosting the embedded noVNC client and acts as the
+// RFB (VNC) server behind it. When credentials are present it connects to the
+// BMC, completes the IVTP handshake, decodes the ASPEED video stream into RGB
+// frames for noVNC, and forwards browser keyboard/mouse events back as USB HID
+// reports. Without credentials it serves an animated test pattern so the
+// noVNC↔RFB pipeline is still verifiable end-to-end.
 func RunCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("kvm", flag.ContinueOnError)
 	host := fs.String("host", "", "BMC host (default: IPMI_HOST)")

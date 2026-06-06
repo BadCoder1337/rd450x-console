@@ -2,7 +2,8 @@
 
 Findings from decompiling the BMC-served `JViewer.jar` + `JViewer-SOC.jar`
 (AMI MegaRAC, firmware 2.36, ASPEED AST SoC). This is the **video/keyboard/mouse
-(KVM)** path — phase 2 of the project, after the working SOL serial console.
+(KVM)** path. It is implemented in `internal/kvm` (transport/handshake) and
+`internal/kvm/codec` (the video decoder); this document is the spec they follow.
 
 > The jars and decompiled sources are AMI-copyrighted and live under `re/`
 > (gitignored). This file is an independent description of the wire format for
@@ -20,9 +21,9 @@ Findings from decompiling the BMC-served `JViewer.jar` + `JViewer-SOC.jar`
   `STOKEN` == the JNLP `-kvmtoken`; `SESSION_COOKIE` == `-webcookie`.
 - **Framing:** every message starts with an 8-byte **IVTP header**, little-endian.
 - **Video codec:** AMI/ASPEED hardware codec — a hybrid **VQ + JPEG (DCT)** tile
-  stream, YUV 4:2:0, optionally **RC4-encrypted**. Full decoder logic is in
+  stream, YUV 4:2:0, optionally **RC4-encrypted**. The reference logic is in
   `JViewer-SOC.jar` → `…/soc/video/Decoder.java` (~67 KB) + `JTables`,
-  `HuffmanTable`, `VideoHeader`. This is the hard part of any port.
+  `HuffmanTable`, `VideoHeader`; it is ported in `internal/kvm/codec`.
 
 ## IVTP packet header (8 bytes, little-endian)
 
