@@ -5,14 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project goal
 
 Reimplement the **remote serial console (Serial-over-LAN)** for a Lenovo RD450X
-server on a modern Python or Node.js/Bun stack, replacing the legacy Java Web
-Start client (`jviewer.jnlp`). The existing client requires an ancient JRE
-(`j2se 1.7+`) and disabled JVM security (`<all-permissions/>`), which is why it
-is being ported.
+server on a modern **Go** stack, replacing the legacy Java Web Start client
+(`jviewer.jnlp`). The existing client requires an ancient JRE (`j2se 1.7+`) and
+disabled JVM security (`<all-permissions/>`), which is why it is being ported.
 
-This is a **greenfield repo** — there is no application code yet, only the
-reference artifact (`jviewer.jnlp`) and credential config. The first task is
-reverse-engineering the target before writing the client.
+The client is implemented in Go: a single `rd450x-console` binary with `sol`
+(serial console) and `kvm` (video) subcommands. An earlier Python prototype was
+removed once the Go port reached parity.
 
 **Scope & order of work:** the KVM/video client (`JViewer.jar`) must also be
 ported, but **only after** the serial console (`JViewer-SOC.jar`) is implemented.
@@ -46,13 +45,13 @@ IPMI web-UI credentials live in `.env` (gitignored), keyed as in
 `.env.example`: `IPMI_USER`, `IPMI_PASSWORD`.
 
 **Read `.env` only at runtime, never into the agent's context.** When testing or
-debugging, load it inside the program (e.g. `python-dotenv`, `os.environ`, or
-Node's `--env-file`) — do **not** `cat`/`Get-Content`/`echo` the file or print the
+debugging, load it inside the program (the Go client reads it via
+`internal/config`) — do **not** `cat`/`Get-Content`/`echo` the file or print the
 password. Reference the variables by name only.
 
 ## Reverse-engineering workflow
 
-Python and Node are already installed. Install RE tooling via **scoop**:
+Go is already installed. Install RE tooling via **scoop**:
 
 ```powershell
 scoop install jadx        # or: cfr / procyon — Java decompilers for the .jar files

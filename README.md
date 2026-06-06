@@ -11,7 +11,7 @@ unnecessary.
 
 ## Reconnaissance findings
 
-Probes against the BMC at `192.168.1.90` (see `scripts/`):
+Probes against the BMC at `192.168.1.90`:
 
 | Check | Result |
 |-------|--------|
@@ -22,9 +22,10 @@ Probes against the BMC at `192.168.1.90` (see `scripts/`):
 | `Activate Payload` (SOL) | **succeeds** (`activated=True`) |
 
 **Conclusion:** standard SOL works. No need to download/decompile
-`JViewer-SOC.jar`. The client is built on [`pyghmi`](https://opendev.org/x/pyghmi)
-(maintained, modern IPMI library) for the RMCP+ transport, wrapped in a clean,
-single-threaded interactive console with cross-platform raw-terminal handling.
+`JViewer-SOC.jar`. The client is built on
+[`github.com/bougou/go-ipmi`](https://github.com/bougou/go-ipmi) (maintained,
+modern IPMI library) for the RMCP+ transport, wrapped in a clean interactive
+console with cross-platform raw-terminal handling.
 
 > **Why the console is silent (diagnosed from the OS side via SSH):** SOL
 > *activation* succeeds, but no serial output ever appears. Root cause is
@@ -85,37 +86,20 @@ messages, and the `pve login:` prompt are **all** carried over SOL. Connect with
 > `console=ttyS1` **hangs the boot** at "Loading initial ramdisk". Use `ttyS0`.
 
 **Client note (Windows):** rendering a full-screen TUI (BIOS Setup) needs care.
-A naive single-threaded loop freezes on big repaints because Python console
-writes can hold the GIL. The client therefore renders on a dedicated thread and
-writes via `WriteConsoleW` (ctypes releases the GIL), keeps sends non-blocking,
-and disables QuickEdit. This Python/GIL friction motivated a clean **Go**
-rewrite (goroutines + channels map naturally onto receive / render / input),
-which now ships as the self-contained binary — see below.
-
-**Now also in Go.** The SOL console has been ported into the single
-`rd450x-console` Go binary (alongside `kvm`), built on
-[`github.com/bougou/go-ipmi`](https://github.com/bougou/go-ipmi). It is the
-recommended client — no Python runtime needed:
-
-```powershell
-go build -o bin\rd450x-console.exe ./cmd/rd450x-console
-.\bin\rd450x-console.exe sol            # interactive serial console
-.\bin\rd450x-console.exe sol --info     # device info + power state, no console
-.\bin\rd450x-console.exe sol --force    # take over a stale SOL session
-```
-
-It reproduces the Python client's behaviour: the `Ctrl-]` escape menu
-(quit / break / literal / help), alternate-screen full-screen TUI handling, a
-decoupled render goroutine, and `WriteConsoleW`/VT-input fidelity on Windows.
-The Python client below remains as the reference implementation.
+A naive single-threaded loop freezes on big repaints, so the console splits
+receive / render / input across goroutines and channels: it renders on a
+dedicated goroutine, writes via `WriteConsoleW`, keeps sends non-blocking, and
+disables QuickEdit.
 
 ## Setup
 
-Requires Python 3.9+.
+The SOL console ships as the single self-contained `rd450x-console` Go binary
+(the `sol` subcommand, alongside `kvm`), built on
+[`github.com/bougou/go-ipmi`](https://github.com/bougou/go-ipmi). Requires Go
+1.24+; no other runtime.
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+go build -o bin\rd450x-console.exe ./cmd/rd450x-console
 Copy-Item .env.example .env   # then edit .env with real credentials
 ```
 
@@ -134,16 +118,17 @@ and is never passed on the command line or logged.
 
 ```powershell
 # Quick health check — device info + power state, no console:
-rd450x-console --info
+.\bin\rd450x-console.exe sol --info
 
 # Open the interactive serial console:
-rd450x-console
+.\bin\rd450x-console.exe sol
+
+# Take over a stale SOL session:
+.\bin\rd450x-console.exe sol --force
 
 # Overrides:
-rd450x-console --host 192.168.1.90 --user albert --escape "Ctrl-]"
+.\bin\rd450x-console.exe sol --host 192.168.1.90 --user albert --escape "Ctrl-]"
 ```
-
-Also runnable as a module: `python -m rd450x_console`.
 
 ### In-console escape commands
 
@@ -164,16 +149,15 @@ ANSI escape sequences on Windows; on POSIX they pass through natively.
 ## Project layout
 
 ```
-src/rd450x_console/
-  config.py     # runtime .env / env-var credential loading (password never printed)
-  terminal.py   # cross-platform raw terminal (Windows msvcrt+VT / POSIX termios)
-  sol.py        # SOL session + single-threaded event loop + escape handling
-  cli.py        # argparse entry point  (console scripts: rd450x-console / rd450x-sol)
-scripts/
-  rmcp_ping.py  # dependency-free RMCP presence ping
-  probe_ipmi.py # session + device id + power + SOL payload status
-  probe_sol.py  # activate SOL, listen passively
-  probe_sol_rt.py # activate SOL, send one CR, capture reply
+cmd/rd450x-console/   # main entry point (sol + kvm subcommands)
+internal/config/      # runtime .env / env-var credential loading (password never printed)
+internal/sol/         # SOL session, console event loop, escape handling, raw terminal
+                      #   (Windows WriteConsoleW+VT / POSIX termios)
+internal/kvm/         # KVM/video client (IVTP transport, ASPEED codec) — project phase 2
+internal/rfb/         # minimal RFB server bridging KVM video to noVNC
+internal/webui/       # embedded noVNC web frontend
+scripts/bench_sol_go/ # SOL throughput benchmark
+scripts/bmc_reset_go/ # BMC cold-reset helper
 ```
 
 ## Roadmap

@@ -27,7 +27,7 @@ func isReadTimeout(err error) bool {
 const DefaultEscape = 0x1D
 
 // solBreakControl is byte [3] of an outbound SOL payload requesting a serial
-// break (15.9, "Generate BREAK"); matches the Python client's 0b10000.
+// break (IPMI 2.0 §15.9, "Generate BREAK"): 0b10000.
 const solBreakControl = 0x10
 
 // Polling cadence. SOL is a request/response protocol: the BMC piggybacks
@@ -58,8 +58,8 @@ type Console struct {
 	// console (WriteConsole into conhost) back-pressure and *block the loop*,
 	// which stalls SOL polling, so the BMC stops getting ACKs and retransmits —
 	// the stall shows up as output slowdown and the retransmit storm as on-screen
-	// garbage. Matching the Python client's unbounded queue, the loop never waits
-	// on rendering.
+	// garbage. The render queue is therefore unbounded: the loop never waits on
+	// rendering.
 	renderMu   sync.Mutex
 	renderBuf  []byte
 	renderWake chan struct{}
@@ -190,9 +190,9 @@ func lower(b byte) byte {
 // go-ipmi's Exchange does no SOL-level dedup, so a retransmit (or a slightly
 // extended one) reaches us with the same sequence number as a packet we already
 // rendered. Rendering it again would duplicate bytes mid-escape-sequence and
-// corrupt the screen, so we mirror pyghmi's _got_sol_payload: render only the
-// bytes beyond what we already showed for this sequence number, but always
-// re-ACK the full length so the BMC stops resending.
+// corrupt the screen, so we render only the bytes beyond what we already showed
+// for this sequence number, but always re-ACK the full length so the BMC stops
+// resending.
 func (c *Console) exchange(chars []byte, control uint8) (active bool, err error) {
 	// Every outbound packet carries a nonzero, incrementing sequence number —
 	// including empty receive polls. This BMC's SOL is request/response: it only
@@ -295,8 +295,7 @@ func (c *Console) Run(ctx context.Context) error {
 	}()
 
 	// Blocking stdin reads on their own goroutine; it outlives Run and dies with
-	// the process (a console read cannot be cleanly interrupted), matching the
-	// Python client's daemon reader.
+	// the process (a console read cannot be cleanly interrupted).
 	inputCh := make(chan []byte, 16)
 	go func() {
 		buf := make([]byte, 4096)
@@ -380,8 +379,8 @@ func activate(ctx context.Context, client *ipmi.Client, force bool) (*ipmi.Activ
 	req := &ipmi.ActivatePayloadRequest{
 		PayloadType:     ipmi.PayloadTypeSOL,
 		PayloadInstance: 1,
-		// Match ipmitool/pyghmi: the SOL payload rides the session's
-		// confidentiality + integrity (the RMCP+ cipher suite already negotiated).
+		// Match ipmitool: the SOL payload rides the session's confidentiality +
+		// integrity (the RMCP+ cipher suite already negotiated).
 		EnableEncryption:     true,
 		EnableAuthentication: true,
 	}

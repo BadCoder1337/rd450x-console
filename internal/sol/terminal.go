@@ -14,8 +14,6 @@ package sol
 // is not mangled at a write boundary; special keys arrive pre-translated to ANSI
 // because virtual-terminal *input* is enabled. On POSIX the tty is switched to
 // raw mode with termios and stdin/stdout are used directly.
-//
-// This mirrors the Python client's terminal.py.
 
 // Give a full-screen TUI (BIOS Setup, etc.) a clean canvas:
 //

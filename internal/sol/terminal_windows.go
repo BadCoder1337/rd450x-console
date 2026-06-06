@@ -25,9 +25,9 @@ const (
 )
 
 // We read keystrokes through the low-level ReadConsoleInputW API and act ONLY on
-// key-down events, ignoring mouse / resize / focus records entirely. This is the
-// robust equivalent of the Python client's msvcrt.getch() loop: mouse movement
-// can never reach the BMC, regardless of console mode or whether the remote side
+// key-down events, ignoring mouse / resize / focus records entirely. Mouse
+// movement can never reach the BMC, regardless of console mode or whether the
+// remote side
 // turned on xterm mouse reporting. (The earlier ENABLE_MOUSE_INPUT-off approach
 // was not enough — in VT-input mode the terminal still delivers mouse coordinates
 // as input, which the shell then echoed as on-screen garbage.)
@@ -87,7 +87,7 @@ func keyReps(n uint16) int {
 }
 
 // specialKeyANSI maps a virtual-key code (for keys that carry no UnicodeChar) to
-// the ANSI escape sequence a serial console expects. Mirrors the Python client.
+// the ANSI escape sequence a serial console expects.
 func specialKeyANSI(vk uint16) []byte {
 	switch vk {
 	case vkUp:
@@ -239,7 +239,7 @@ func (t *windowsTerminal) write(b []byte) error {
 	u16 := utf16.Encode([]rune(string(head)))
 	for len(u16) > 0 {
 		n := len(u16)
-		if n > 8000 { // chunk large bursts, as the Python client did
+		if n > 8000 { // chunk large bursts to bound a single WriteConsoleW call
 			n = 8000
 		}
 		var written uint32

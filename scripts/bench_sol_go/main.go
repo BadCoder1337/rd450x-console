@@ -4,8 +4,7 @@
 // owner that drives SOLPayload request/response exchanges, re-polls immediately
 // while data flows (drainPoll == 0), and dedupes retransmitted inbound packets
 // by sequence number. We send one command to the logged-in shell on COM0 and
-// time the resulting output burst, printing the same metrics as bench_sol.py so
-// the two are directly comparable.
+// time the resulting output burst, printing throughput metrics.
 //
 // Usage:  go run ./scripts/bench_sol_go [command]   (default: colortest-8)
 // Loads .env at runtime; never prints the password.
@@ -133,7 +132,7 @@ func main() {
 	}
 
 	fmt.Printf("Activating SOL on %s:%d ...\n", creds.Host, port)
-	// Force takeover, matching the benchmark's force=True on the Python side.
+	// Force takeover of any existing SOL session.
 	if _, err := client.ActivatePayload(ctx, &ipmi.ActivatePayloadRequest{
 		PayloadType: ipmi.PayloadTypeSOL, PayloadInstance: 1,
 		EnableEncryption: true, EnableAuthentication: true,

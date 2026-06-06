@@ -65,7 +65,6 @@ internal/sol/
   (type 1) via an `rfb.Sink`.
 - **Done:** SOL ported to Go (`github.com/bougou/go-ipmi`) — `rd450x-console sol`
   with the Ctrl-] escape menu, serial break, `--force`/`--info`, and the
-  cross-platform raw terminal. The binary is self-contained; the Python client in
-  `src/rd450x_console` is kept as reference.
+  cross-platform raw terminal. The binary is self-contained.
 
 See `docs/kvm-protocol.md` for the wire format the codec must implement.

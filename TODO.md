@@ -41,9 +41,3 @@ tracks only what's still pending.
 - [ ] **Dispatch inbound control messages** (power status, keyboard-LED state,
       encryption negotiation) in the read loop instead of discarding them.
       _Source: `internal/kvm/client.go:207`._
-
-## SOL (Serial-over-LAN)
-
-- [ ] **Retire the Python client** (`src/rd450x_console`, `scripts/`,
-      `pyproject.toml`) now that `rd450x-console sol` is a self-contained Go port.
-      Kept for now as the reference implementation. _Source: 2026-06-06 SOL-in-Go port._
