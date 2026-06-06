@@ -30,4 +30,10 @@ func (l *lateSink) PointerEvent(x, y int, buttons uint8) {
 	}
 }
 
+func (l *lateSink) CutText(text string) {
+	if p := l.v.Load(); p != nil {
+		(*p).CutText(text)
+	}
+}
+
 var _ rfb.Sink = (*lateSink)(nil)

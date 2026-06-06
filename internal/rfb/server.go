@@ -271,10 +271,18 @@ func readMessages(r *bufio.Reader, sink Sink, reqc chan<- bool, errc chan<- erro
 				return
 			}
 			n := int(binary.BigEndian.Uint32(b[3:]))
-			if _, err := discard(r, n); err != nil {
+			if n < 0 || n > 1<<20 { // sanity cap (1 MiB)
+				errc <- fmt.Errorf("rfb: cut-text length %d out of range", n)
+				return
+			}
+			text := make([]byte, n)
+			if _, err := io.ReadFull(r, text); err != nil {
 				errc <- err
 				return
 			}
+			// RFB cut text is Latin-1. Forward to the sink, which (for KVM) types
+			// it out as synthetic keystrokes.
+			sink.CutText(string(text))
 		default:
 			errc <- fmt.Errorf("rfb: unknown client message type %d", typ)
 			return

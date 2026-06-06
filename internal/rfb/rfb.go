@@ -28,13 +28,18 @@ type Source interface {
 type Sink interface {
 	KeyEvent(keysym uint32, down bool)
 	PointerEvent(x, y int, buttons uint8)
+	// CutText is the client's clipboard (ClientCutText). For a KVM/HID target
+	// there is no shared clipboard, so an implementation typically types the
+	// text out as synthetic key presses ("paste as keystrokes").
+	CutText(text string)
 }
 
 // nopSink ignores all input; useful before the HID path is wired up.
 type nopSink struct{}
 
-func (nopSink) KeyEvent(uint32, bool)      {}
+func (nopSink) KeyEvent(uint32, bool)        {}
 func (nopSink) PointerEvent(int, int, uint8) {}
+func (nopSink) CutText(string)               {}
 
 // NopSink returns a Sink that discards input.
 func NopSink() Sink { return nopSink{} }

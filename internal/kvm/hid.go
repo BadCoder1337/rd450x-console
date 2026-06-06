@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"rd450x-console/internal/rfb"
 )
@@ -233,6 +234,72 @@ func (s *HIDSink) PointerEvent(x, y int, buttons uint8) {
 	wheel := rfbWheel(buttons)
 
 	_ = s.c.SendHIDReport(mouseAbsReport(btn, ax, ay, wheel))
+}
+
+// pasteKeyInterval paces synthetic keystrokes during a CutText paste. The guest
+// USB stack needs a distinct key-up between key-downs to register repeats, and
+// sending reports back-to-back at full speed can overrun it; ~8ms/event is
+// imperceptible for typical pastes yet reliable.
+const pasteKeyInterval = 8 * time.Millisecond
+
+// CutText implements rfb.Sink by "pasting as keystrokes": each character of the
+// clipboard text is typed as a press+release of the corresponding USB HID key.
+// There is no shared clipboard with a KVM target, so this is the only way to get
+// text in. Runs asynchronously so the RFB read loop is not blocked for the whole
+// paste. Non-ASCII characters (e.g. Cyrillic) have no fixed scancode and are
+// skipped — they depend on the guest keyboard layout (see docs).
+func (s *HIDSink) CutText(text string) {
+	if text == "" {
+		return
+	}
+	go func() {
+		for _, r := range text {
+			usage, shift, ok := asciiToUsage(r)
+			if !ok {
+				continue
+			}
+			var down [8]byte
+			if shift {
+				down[0] = modLeftShift
+			}
+			down[2] = usage
+			_ = s.c.SendHIDReport(keyboardReport(down))
+			time.Sleep(pasteKeyInterval)
+			var up [8]byte // all-zero report = release everything
+			_ = s.c.SendHIDReport(keyboardReport(up))
+			time.Sleep(pasteKeyInterval)
+		}
+	}()
+}
+
+// shiftedASCII is the set of printable ASCII characters that require Shift to be
+// held (besides the A–Z letters, handled separately).
+var shiftedASCII = map[rune]bool{
+	'!': true, '@': true, '#': true, '$': true, '%': true, '^': true,
+	'&': true, '*': true, '(': true, ')': true, '_': true, '+': true,
+	'{': true, '}': true, '|': true, ':': true, '"': true, '~': true,
+	'<': true, '>': true, '?': true,
+}
+
+// asciiToUsage maps a rune to its USB HID usage code and whether Shift must be
+// held. ok is false for characters with no fixed US-layout scancode (control
+// chars other than Tab/Enter, and any non-ASCII rune such as Cyrillic).
+func asciiToUsage(r rune) (usage byte, shift bool, ok bool) {
+	switch r {
+	case '\n', '\r':
+		return 0x28, false, true // Enter
+	case '\t':
+		return 0x2b, false, true // Tab
+	}
+	if r < 0x20 || r > 0x7e {
+		return 0, false, false
+	}
+	u := usbUsage[uint32(r)]
+	if u == 0 {
+		return 0, false, false
+	}
+	shift = (r >= 'A' && r <= 'Z') || shiftedASCII[r]
+	return u, shift, true
 }
 
 // rfbButtonsToUSB maps the RFB pointer button mask to the USB HID mouse button
