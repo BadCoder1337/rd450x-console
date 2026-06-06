@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag/version to build (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write # needed to create the GitHub Release and upload assets
+
+env:
+  BINARY: rd450x-console
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # noVNC is embedded via go:embed
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      - name: Resolve version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          version='${{ steps.ver.outputs.version }}'
+          ext=''
+          if [ "$GOOS" = windows ]; then ext='.exe'; fi
+          mkdir -p dist
+          out="${BINARY}${ext}"
+          go build -trimpath -ldflags "-s -w -X main.version=${version}" -o "dist/${out}" ./cmd/rd450x-console
+
+          # Package: tar.gz for unix, zip for windows. Bundle README + LICENSE.
+          name="${BINARY}_${version}_${GOOS}_${GOARCH}"
+          staging="dist/${name}"
+          mkdir -p "$staging"
+          mv "dist/${out}" "$staging/"
+          cp README.md LICENSE "$staging/"
+          cd dist
+          if [ "$GOOS" = windows ]; then
+            zip -r "${name}.zip" "$name" >/dev/null
+          else
+            tar -czf "${name}.tar.gz" "$name"
+          fi
+          rm -rf "$name"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 5
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS.txt
