@@ -3,12 +3,12 @@
 // noVNC client can render frames produced by the KVM bridge and forward
 // keyboard/mouse input back.
 //
-// Only what noVNC needs is implemented: security type None, a fixed 32-bpp BGRX
+// Only what noVNC needs is implemented: security type None, a fixed 32-bpp RGBX
 // pixel format, and Raw-encoded full-frame updates. Tight/ZRLE and dirty-rect
 // optimization can be added later.
 package rfb
 
-// Frame is a 32-bpp BGRX (little-endian) framebuffer; len(Pix) == W*H*4.
+// Frame is a 32-bpp RGBX (little-endian) framebuffer; len(Pix) == W*H*4.
 type Frame struct {
 	W, H int
 	Pix  []byte

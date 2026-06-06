@@ -147,13 +147,16 @@ func handshake(r *bufio.Reader, w *bufio.Writer, src Source) error {
 	return w.Flush()
 }
 
-// writeServerInit sends dimensions, the fixed BGRX pixel format, and a name.
+// writeServerInit sends dimensions, the fixed RGBX pixel format, and a name.
 func writeServerInit(w *bufio.Writer, width, height int, name string) error {
 	var b [24]byte
 	binary.BigEndian.PutUint16(b[0:], uint16(width))
 	binary.BigEndian.PutUint16(b[2:], uint16(height))
 	// PixelFormat (16 bytes): 32 bpp, depth 24, little-endian, true-colour,
-	// max 255 each, shifts R=16 G=8 B=0 → in-memory bytes [B,G,R,X].
+	// max 255 each, shifts R=0 G=8 B=16 → in-memory bytes [R,G,B,X]. This is the
+	// exact format noVNC requests via SetPixelFormat (RFB.messages.pixelFormat),
+	// so its raw decoder copies our bytes straight into the RGBA canvas without a
+	// channel reorder — declaring BGRX here makes noVNC swap R↔B.
 	b[4] = 32                               // bits-per-pixel
 	b[5] = 24                               // depth
 	b[6] = 0                                // big-endian-flag = false
@@ -161,9 +164,9 @@ func writeServerInit(w *bufio.Writer, width, height int, name string) error {
 	binary.BigEndian.PutUint16(b[8:], 255)  // red-max
 	binary.BigEndian.PutUint16(b[10:], 255) // green-max
 	binary.BigEndian.PutUint16(b[12:], 255) // blue-max
-	b[14] = 16                              // red-shift
+	b[14] = 0                               // red-shift
 	b[15] = 8                               // green-shift
-	b[16] = 0                               // blue-shift
+	b[16] = 16                              // blue-shift
 	// b[17..19] padding
 	binary.BigEndian.PutUint32(b[20:], uint32(len(name)))
 	if _, err := w.Write(b[:]); err != nil {

@@ -23,7 +23,9 @@ var ErrNotImplemented = errors.New("kvm/codec: ASPEED decoder not yet implemente
 // virtAdd ports SOCIVTPPktHdr.VIRTADD (0 on this build).
 const virtAdd = 0
 
-// Frame is a decoded video frame, 32-bpp BGRX (little-endian), len(Pix)=W*H*4.
+// Frame is a decoded video frame, 32-bpp RGBX (little-endian), len(Pix)=W*H*4.
+// RGBX matches the pixel format noVNC requests via SetPixelFormat (red-shift 0,
+// green-shift 8, blue-shift 16), so the RFB raw blit lands directly in the canvas.
 type Frame struct {
 	W, H int
 	Pix  []byte
@@ -157,16 +159,17 @@ func (d *Decoder) Decode(frame []byte) (*Frame, error) {
 
 	out := &Frame{W: d.realWidth, H: d.realH}
 	out.Pix = make([]byte, d.realWidth*d.realH*4)
-	// decodeBuf is 24-bit BGR (3 bytes/pixel, [B,G,R]); expand to BGRX.
+	// decodeBuf is 24-bit BGR (3 bytes/pixel, [B,G,R]); expand to RGBX so the
+	// channel order matches the format noVNC negotiates (red byte first).
 	src := d.decodeBuf
 	di := 0
 	for y := 0; y < d.realH; y++ {
 		row := y * d.bufStride * 3
 		for x := 0; x < d.realWidth; x++ {
 			si := row + x*3
-			out.Pix[di+0] = src[si+0] // B
+			out.Pix[di+0] = src[si+2] // R
 			out.Pix[di+1] = src[si+1] // G
-			out.Pix[di+2] = src[si+2] // R
+			out.Pix[di+2] = src[si+0] // B
 			out.Pix[di+3] = 0         // X
 			di += 4
 		}

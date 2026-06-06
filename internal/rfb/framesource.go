@@ -28,7 +28,7 @@ func NewFrameSource(w, h int) *FrameSource {
 	}
 }
 
-// Update swaps in a new frame and signals consumers. pix is BGRX, len==w*h*4.
+// Update swaps in a new frame and signals consumers. pix is RGBX, len==w*h*4.
 // The caller must not mutate pix after the call (the source takes ownership);
 // the KVM codec allocates a fresh buffer per frame, so this is satisfied.
 func (s *FrameSource) Update(w, h int, pix []byte) {
