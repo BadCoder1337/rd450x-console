@@ -70,8 +70,7 @@ type Console struct {
 	remoteSize int   // its character count, so a retransmit renders only new bytes
 	pendingAck uint8 // chars to ACK on the next outbound packet
 
-	runCtx context.Context
-	stop   bool
+	stop bool
 }
 
 // NewConsole builds a Console for an already-connected client.
@@ -193,7 +192,7 @@ func lower(b byte) byte {
 // corrupt the screen, so we render only the bytes beyond what we already showed
 // for this sequence number, but always re-ACK the full length so the BMC stops
 // resending.
-func (c *Console) exchange(chars []byte, control uint8) (active bool, err error) {
+func (c *Console) exchange(ctx context.Context, chars []byte, control uint8) (active bool, err error) {
 	// Every outbound packet carries a nonzero, incrementing sequence number —
 	// including empty receive polls. This BMC's SOL is request/response: it only
 	// returns a datagram in reply to a packet it must answer, and it stays silent
@@ -207,7 +206,7 @@ func (c *Console) exchange(chars []byte, control uint8) (active bool, err error)
 		ControlByte:            control,
 		CharacterData:          chars,
 	}}
-	res, err := c.client.SOLPayload(c.runCtx, req)
+	res, err := c.client.SOLPayload(ctx, req)
 	if err != nil {
 		return false, err
 	}
@@ -269,8 +268,6 @@ func (c *Console) renderLoop(done <-chan struct{}) {
 // Run drives the SOL session until the escape-quit command, ctx cancellation, or
 // a transport error. The caller is responsible for ActivatePayload/Deactivate.
 func (c *Console) Run(ctx context.Context) error {
-	c.runCtx = ctx
-
 	t, err := openTerminal()
 	if err != nil {
 		return fmt.Errorf("raw terminal: %w", err)
@@ -326,7 +323,7 @@ func (c *Console) Run(ctx context.Context) error {
 
 	// Prime the link: an initial empty packet establishes the ack baseline. An
 	// idle BMC may not answer it (read timeout) — that is fine, keep going.
-	if _, err := c.exchange(nil, 0); err != nil && !isReadTimeout(err) {
+	if _, err := c.exchange(ctx, nil, 0); err != nil && !isReadTimeout(err) {
 		return err
 	}
 
@@ -338,12 +335,12 @@ func (c *Console) Run(ctx context.Context) error {
 		case data := <-inputCh:
 			pass, quit, brk := esc.feed(c, data)
 			if brk {
-				if _, err := c.exchange(nil, solBreakControl); err != nil && !isReadTimeout(err) {
+				if _, err := c.exchange(ctx, nil, solBreakControl); err != nil && !isReadTimeout(err) {
 					return err
 				}
 			}
 			if len(pass) > 0 {
-				if _, err := c.exchange(pass, 0); err != nil && !isReadTimeout(err) {
+				if _, err := c.exchange(ctx, pass, 0); err != nil && !isReadTimeout(err) {
 					return err
 				}
 			}
@@ -353,7 +350,7 @@ func (c *Console) Run(ctx context.Context) error {
 			resetPoll(drainPoll) // drain any response to our input promptly
 
 		case <-poll.C:
-			_, err := c.exchange(nil, 0)
+			_, err := c.exchange(ctx, nil, 0)
 			switch {
 			case err == nil:
 				// The BMC answered — with serial data or, between packets of a

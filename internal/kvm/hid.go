@@ -1,6 +1,7 @@
 package kvm
 
 import (
+	"context"
 	"encoding/binary"
 	"sync"
 	"sync/atomic"
@@ -126,7 +127,8 @@ func (c *Client) SendHIDReport(report []byte) error { return c.write(report) }
 // HIDSink implements rfb.Sink, maintaining keyboard and mouse state and emitting
 // USB HID reports to the BMC via the Client.
 type HIDSink struct {
-	c *Client
+	c   *Client
+	ctx context.Context // cancels an in-flight paste when the session ends
 
 	fbW, fbH int // current framebuffer size, for absolute-mouse scaling
 	szMu     sync.RWMutex
@@ -138,13 +140,14 @@ type HIDSink struct {
 
 // NewSink returns a HID Sink that drives keyboard/mouse over the given Client.
 // It defaults to absolute mouse mode; coordinates are scaled against the frame
-// size supplied via SetFrameSize. The concrete type is returned so callers can
-// update the frame size on resolution change; it satisfies rfb.Sink.
-func NewSink(c *Client, fbW, fbH int) *HIDSink {
+// size supplied via SetFrameSize. ctx bounds asynchronous work (a CutText paste)
+// to the session lifetime. The concrete type is returned so callers can update
+// the frame size on resolution change; it satisfies rfb.Sink.
+func NewSink(ctx context.Context, c *Client, fbW, fbH int) *HIDSink {
 	if fbW <= 0 || fbH <= 0 {
 		fbW, fbH = 1024, 768
 	}
-	return &HIDSink{c: c, fbW: fbW, fbH: fbH, pressed: make([]byte, 0, 6)}
+	return &HIDSink{ctx: ctx, c: c, fbW: fbW, fbH: fbH, pressed: make([]byte, 0, 6)}
 }
 
 // SetFrameSize updates the framebuffer dimensions used to scale absolute mouse
@@ -264,12 +267,32 @@ func (s *HIDSink) CutText(text string) {
 			}
 			down[2] = usage
 			_ = s.c.SendHIDReport(keyboardReport(down))
-			time.Sleep(pasteKeyInterval)
+			if !s.pasteDelay() {
+				return
+			}
 			var up [8]byte // all-zero report = release everything
 			_ = s.c.SendHIDReport(keyboardReport(up))
-			time.Sleep(pasteKeyInterval)
+			if !s.pasteDelay() {
+				return
+			}
 		}
 	}()
+}
+
+// pasteDelay waits one paste interval, returning false if the session context is
+// cancelled meanwhile so the paste goroutine stops instead of typing into a torn-
+// down connection for the rest of a long clipboard.
+func (s *HIDSink) pasteDelay() bool {
+	if s.ctx == nil {
+		time.Sleep(pasteKeyInterval)
+		return true
+	}
+	select {
+	case <-s.ctx.Done():
+		return false
+	case <-time.After(pasteKeyInterval):
+		return true
+	}
 }
 
 // shiftedASCII is the set of printable ASCII characters that require Shift to be

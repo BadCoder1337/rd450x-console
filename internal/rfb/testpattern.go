@@ -55,10 +55,10 @@ func (tp *TestPattern) render() {
 		for x := 0; x < tp.w; x++ {
 			i := (y*tp.w + x) * 4
 			// RGBX gradient (matches the negotiated noVNC pixel format)
-			pix[i+0] = byte((x + y) & 0xff)         // R
-			pix[i+1] = byte((y + off) & 0xff)       // G
-			pix[i+2] = byte((x + off) & 0xff)       // B
-			pix[i+3] = 0                            // X
+			pix[i+0] = byte((x + y) & 0xff)   // R
+			pix[i+1] = byte((y + off) & 0xff) // G
+			pix[i+2] = byte((x + off) & 0xff) // B
+			pix[i+3] = 0                      // X
 			if x >= box && x < box+80 && y >= tp.h/2-40 && y < tp.h/2+40 {
 				pix[i+0], pix[i+1], pix[i+2] = 255, 200, 0 // an orange box
 			}

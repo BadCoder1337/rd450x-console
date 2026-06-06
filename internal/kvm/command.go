@@ -79,7 +79,7 @@ func connectBMC(ctx context.Context, opts Options, password string, fsrc *rfb.Fr
 	}
 	log.Printf("kvm: connected to BMC %s:%d, streaming video fragments", opts.Host, opts.Port)
 
-	hid := NewSink(c, 1024, 768)
+	hid := NewSink(ctx, c, 1024, 768)
 	c.OnFrame = func(f *codec.Frame) {
 		fsrc.Update(f.W, f.H, f.Pix)
 		hid.SetFrameSize(f.W, f.H)

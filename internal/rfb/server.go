@@ -271,7 +271,7 @@ func readMessages(r *bufio.Reader, sink Sink, reqc chan<- bool, errc chan<- erro
 				return
 			}
 			n := int(binary.BigEndian.Uint32(b[3:]))
-			if n < 0 || n > 1<<20 { // sanity cap (1 MiB)
+			if n > 1<<20 { // sanity cap (1 MiB)
 				errc <- fmt.Errorf("rfb: cut-text length %d out of range", n)
 				return
 			}

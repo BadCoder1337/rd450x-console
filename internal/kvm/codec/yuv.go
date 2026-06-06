@@ -62,6 +62,10 @@ func (d *Decoder) convertYUVtoRGB(tx, ty int) {
 	}
 	x0 := tx * 16
 	y0 := ty * 16
+	// Faithful to Decoder.java: the 420 path seeds the offset with the padded
+	// WIDTH (`y0*d.width`) but advances rows by the unpadded RealWIDTH
+	// (`off += d.realWidth` below). The asymmetry only matters when width isn't a
+	// multiple of 16; do not "normalize" it — it must match the reference codec.
 	off := y0*d.width + x0
 	var ic [4]int
 	rows := 16

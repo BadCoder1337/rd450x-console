@@ -51,7 +51,13 @@ const (
 type emuResponder struct{ ch chan []byte }
 
 func (e emuResponder) Write(p []byte) (int, error) {
-	e.ch <- append([]byte(nil), p...)
+	// Non-blocking: emulator replies (cursor/device reports) are ancillary, so if
+	// inbytes is momentarily full, drop this reply rather than block the render
+	// goroutine — a stalled render stalls SOL polling and triggers retransmits.
+	select {
+	case e.ch <- append([]byte(nil), p...):
+	default:
+	}
 	return len(p), nil
 }
 

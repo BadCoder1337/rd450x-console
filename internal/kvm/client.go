@@ -16,6 +16,12 @@ import (
 
 const keepAliveInterval = 5 * time.Second
 
+// maxFrameBytes caps the reassembled video frame. A 1080p ASPEED frame is well
+// under this; the bound just stops a malformed or hostile stream (huge h.Size,
+// or an endless run of non-terminal fragments) from growing the buffer until it
+// exhausts memory before the codec can reject it.
+const maxFrameBytes = 8 << 20 // 8 MiB
+
 // FrameFunc is called with each fully decoded video frame.
 type FrameFunc func(f *codec.Frame)
 
@@ -35,7 +41,7 @@ type Client struct {
 // Options configure a KVM connection.
 type Options struct {
 	Host string
-	Port int // video port, default 7582
+	Port int  // video port, default 7582
 	TLS  bool // kvmsecure
 	User string
 }
@@ -67,11 +73,17 @@ func Connect(ctx context.Context, opts Options, password string) (*Client, error
 		webCookie: sess.Cookie,
 	}
 
+	// Bound the handshake: after the TCP/TLS dial, a BMC that stops responding
+	// mid-handshake would otherwise block this goroutine forever (the read loop
+	// itself is unbounded by design — frames arrive continuously). Clear the
+	// deadline once validated so the steady video stream is not time-limited.
+	conn.SetDeadline(time.Now().Add(dialTimeout))
 	if err := c.handshake(sess, opts.User); err != nil {
 		conn.Close()
 		Logout(opts.Host, sess.Cookie)
 		return nil, err
 	}
+	conn.SetDeadline(time.Time{})
 
 	// The web session has done its only job: minting the kvmtoken and allocating
 	// the video session, which is now validated and resumed. Release it right away
@@ -187,6 +199,9 @@ func (c *Client) readLoop() error {
 				frame = frame[:0]
 			}
 			start := len(frame)
+			if start+dataLen > maxFrameBytes {
+				return fmt.Errorf("video frame exceeds %d bytes", maxFrameBytes)
+			}
 			frame = append(frame, make([]byte, dataLen)...)
 			if _, err := io.ReadFull(c.r, frame[start:]); err != nil {
 				return err

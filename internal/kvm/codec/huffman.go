@@ -6,9 +6,9 @@ package codec
 
 // huffmanTable mirrors com.ami.kvm.jviewer.soc.video.HuffmanTable.
 type huffmanTable struct {
-	Length    [17]int8    // code lengths per bit-length (Java byte[17])
-	minorCode [17]int16   // Java short[17]
-	majorCode [17]int16   // Java short[17]
+	Length    [17]int8     // code lengths per bit-length (Java byte[17])
+	minorCode [17]int16    // Java short[17]
+	majorCode [17]int16    // Java short[17]
 	V         [65536]int16 // value lookup (Java short[65536])
 	Len       [65536]byte  // bit-length lookup keyed by 16-bit code (Java byte[65536])
 }

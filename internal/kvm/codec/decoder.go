@@ -12,13 +12,7 @@
 // performed in Java.
 package codec
 
-import (
-	"errors"
-	"fmt"
-)
-
-// ErrNotImplemented is retained for API compatibility; no longer returned.
-var ErrNotImplemented = errors.New("kvm/codec: ASPEED decoder not yet implemented")
+import "fmt"
 
 // virtAdd ports SOCIVTPPktHdr.VIRTADD (0 on this build).
 const virtAdd = 0
@@ -38,11 +32,11 @@ type Frame struct {
 // Field names follow Decoder.java where practical.
 type Decoder struct {
 	// Resolution / geometry (Decoder.decode).
-	width, height       int // WIDTH/HEIGHT (padded to MB grid)
-	realWidth, realH    int // RealWIDTH/RealHEIGHT (true resolution)
-	tmpWidthBy16        int // tmp_WIDTHBy16 (dest X, padded)
-	tmpHeightBy16       int // tmp_HEIGHTBy16 (dest Y, padded)
-	mode420             int // m_Mode420
+	width, height    int // WIDTH/HEIGHT (padded to MB grid)
+	realWidth, realH int // RealWIDTH/RealHEIGHT (true resolution)
+	tmpWidthBy16     int // tmp_WIDTHBy16 (dest X, padded)
+	tmpHeightBy16    int // tmp_HEIGHTBy16 (dest Y, padded)
+	mode420          int // m_Mode420
 
 	// Per-frame quant selectors (Decoder.decode sets these).
 	scaleFactor, scaleFactorUV               int // SCALEFACTOR / SCALEFACTORUV (always 16)
@@ -68,13 +62,13 @@ type Decoder struct {
 	newbits int      // m_newbits
 
 	// Scratch decode buffers (sized once per resolution).
-	dctCoeff   [384]int32 // m_DCT_coeff
-	workspace  [64]int32  // workspace (IDCT column pass)
-	yuvTile    [768]int32 // YUVTile (Y(4×64) + Cb(64) + Cr(64) in 420)
-	yTile420   [4][64]int32
-	cbTile     [64]int32
-	crTile     [64]int32
-	yTile      [64]int32 // YValueInTile (444 path)
+	dctCoeff  [384]int32 // m_DCT_coeff
+	workspace [64]int32  // workspace (IDCT column pass)
+	yuvTile   [768]int32 // YUVTile (Y(4×64) + Cb(64) + Cr(64) in 420)
+	yTile420  [4][64]int32
+	cbTile    [64]int32
+	crTile    [64]int32
+	yTile     [64]int32 // YValueInTile (444 path)
 
 	// Output framebuffer: 24-bit BGR, 3 bytes/pixel (Decoder.m_decodeBuf).
 	decodeBuf []byte
@@ -94,7 +88,7 @@ type Decoder struct {
 	negPow2              [17]int16
 
 	// RC4 state (Decoder.s + DecodeRC4State).
-	rc4         rc4State
+	rc4          rc4State
 	rc4SetupDone bool // DecodeRC4State
 
 	// VQ color cache (Decoder.m_VQ / COLOR_CACHE).
