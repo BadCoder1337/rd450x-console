@@ -127,9 +127,10 @@ as USB HID reports. Clipboard text can be pasted into the console as keystrokes.
 
 ## How SOL is wired on the RD450X
 
-SOL *activation* succeeds out of the box, but carrying a real console requires two
-server-side layers to be configured. This was diagnosed against the running
-Proxmox host; the working configuration is:
+SOL *activation* succeeds out of the box, but carrying a real console requires the
+server's BIOS, bootloader and OS to be configured. The summary below is the
+working configuration; **[`docs/sol-setup.md`](docs/sol-setup.md)** has the full
+step-by-step (with the GRUB serial-menu and baud-rate gotchas).
 
 - **SOL port = `COM0`** (labelled `COM0(SOL)` in the AMI BIOS) = Linux `ttyS0`
   (`0x3F8`). The BMC SOL is a real hardware UART bridge on that port.
