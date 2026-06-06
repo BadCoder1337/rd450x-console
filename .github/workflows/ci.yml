@@ -25,7 +25,7 @@ jobs:
           - { os: macos-latest,   race: '-race' }
           - { os: windows-latest, race: '' } # race detector needs a C toolchain; skip on Windows
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive # noVNC is embedded via go:embed; build fails without it
 
@@ -47,7 +47,7 @@ jobs:
     name: gofmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         # no submodules needed: gofmt only inspects first-party .go files
 
       - uses: actions/setup-go@v6
