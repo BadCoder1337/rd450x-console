@@ -18,11 +18,6 @@ type Creds struct {
 	Password string // never logged
 }
 
-// Defaults.
-const (
-	DefaultHost = "192.168.1.90"
-)
-
 // LoadDotEnv reads a dotenv-style file and sets any keys not already present in
 // the environment. Missing files are ignored. Values are never printed.
 func LoadDotEnv(path string) {
@@ -50,9 +45,10 @@ func LoadDotEnv(path string) {
 	}
 }
 
-// Load resolves credentials, applying the host override if non-empty.
+// Load resolves credentials from the override flags, then the environment.
+// Host has no built-in default: it must come from -host or IPMI_HOST.
 func Load(hostOverride, userOverride string) Creds {
-	host := firstNonEmpty(hostOverride, os.Getenv("IPMI_HOST"), DefaultHost)
+	host := firstNonEmpty(hostOverride, os.Getenv("IPMI_HOST"))
 	user := firstNonEmpty(userOverride, os.Getenv("IPMI_USER"))
 	return Creds{
 		Host:     host,

@@ -20,7 +20,7 @@ import (
 // stream. Wiring decoded BMC frames into the RFB source lands with the codec.
 func RunCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("kvm", flag.ContinueOnError)
-	host := fs.String("host", "", "BMC host (default: IPMI_HOST or built-in)")
+	host := fs.String("host", "", "BMC host (default: IPMI_HOST)")
 	user := fs.String("user", "", "BMC user (default: IPMI_USER)")
 	port := fs.Int("port", 7582, "KVM video port")
 	useTLS := fs.Bool("tls", true, "wrap the video socket in TLS (kvmsecure)")
@@ -44,7 +44,7 @@ func RunCommand(ctx context.Context, args []string) error {
 		sink rfb.Sink
 	)
 
-	if creds.User != "" && creds.Password != "" {
+	if creds.Host != "" && creds.User != "" && creds.Password != "" {
 		// Real BMC: a dynamic FrameSource fed by decoded video, and a HID Sink
 		// driving keyboard/mouse. Both are created up front so the BMC client's
 		// OnFrame and the sink are wired before Run starts.

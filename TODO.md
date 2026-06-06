@@ -44,7 +44,6 @@ tracks only what's still pending.
 
 ## SOL (Serial-over-LAN)
 
-- [ ] **Port SOL mode to Go** using `github.com/bougou/go-ipmi` to retire the
-      Python client (`src/rd450x_console`) and make the binary fully
-      self-contained. Today `rd450x-console sol` is a stub that points at the
-      Python client. _Source: `internal/sol/sol.go`; `docs/kvm-bridge.md`._
+- [ ] **Retire the Python client** (`src/rd450x_console`, `scripts/`,
+      `pyproject.toml`) now that `rd450x-console sol` is a self-contained Go port.
+      Kept for now as the reference implementation. _Source: 2026-06-06 SOL-in-Go port._

@@ -9,8 +9,9 @@ browser (noVNC)  ──WebSocket / RFB──▶  rd450x-console  ──IVTP/ASPE
    render + input          (Raw RGB frames)   (decode frames, inject HID)
 ```
 
-The same binary will host the SOL console mode (`sol`) once it is ported to Go;
-today `sol` defers to the working Python client.
+The same binary also hosts the SOL console mode (`sol`), ported to Go on
+`github.com/bougou/go-ipmi` (`.\bin\rd450x-console.exe sol`). See the README for
+its flags and escape menu.
 
 ## Run
 
@@ -45,7 +46,11 @@ internal/kvm/
 internal/rfb/            minimal RFB 3.8 server over net.Conn (Raw encoding) + test pattern
 internal/webui/          go:embed noVNC + /websockify bridge + browser open
 internal/webui/novnc/    noVNC v1.5.0 — git submodule (novnc/noVNC), embedded via go:embed
-internal/sol/            SOL mode (stub → Python client for now)
+internal/sol/
+  sol.go                 `sol` subcommand wiring + flags + --info
+  console.go             RMCP+ SOL session loop, seq/ack, escape menu, render goroutine
+  terminal_windows.go    raw console (WriteConsoleW + VT input + incremental UTF-8)
+  terminal_unix.go       raw tty via termios (golang.org/x/term)
 ```
 
 ## Status
@@ -58,7 +63,9 @@ internal/sol/            SOL mode (stub → Python client for now)
   + RC4, YUV420, skip tiles), then feed decoded frames into an `rfb.Source` to
   replace the test pattern, and map RFB key/pointer events → IVTP HID packets
   (type 1) via an `rfb.Sink`.
-- **Then:** port SOL to Go (`github.com/bougou/go-ipmi`) to retire the Python
-  client and make the binary fully self-contained.
+- **Done:** SOL ported to Go (`github.com/bougou/go-ipmi`) — `rd450x-console sol`
+  with the Ctrl-] escape menu, serial break, `--force`/`--info`, and the
+  cross-platform raw terminal. The binary is self-contained; the Python client in
+  `src/rd450x_console` is kept as reference.
 
 See `docs/kvm-protocol.md` for the wire format the codec must implement.

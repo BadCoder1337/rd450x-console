@@ -16,3 +16,8 @@ re/
 
 # go build output
 /bin/
+*.exe
+*.elf
+# transient capture/benchmark output
+*.bin
+pty_capture.bin

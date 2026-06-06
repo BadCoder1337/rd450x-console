@@ -88,9 +88,26 @@ messages, and the `pve login:` prompt are **all** carried over SOL. Connect with
 A naive single-threaded loop freezes on big repaints because Python console
 writes can hold the GIL. The client therefore renders on a dedicated thread and
 writes via `WriteConsoleW` (ctypes releases the GIL), keeps sends non-blocking,
-and disables QuickEdit. This Python/GIL friction is the motivation for a planned
-clean **Go** rewrite (goroutines + channels map naturally onto receive / render
-/ input).
+and disables QuickEdit. This Python/GIL friction motivated a clean **Go**
+rewrite (goroutines + channels map naturally onto receive / render / input),
+which now ships as the self-contained binary — see below.
+
+**Now also in Go.** The SOL console has been ported into the single
+`rd450x-console` Go binary (alongside `kvm`), built on
+[`github.com/bougou/go-ipmi`](https://github.com/bougou/go-ipmi). It is the
+recommended client — no Python runtime needed:
+
+```powershell
+go build -o bin\rd450x-console.exe ./cmd/rd450x-console
+.\bin\rd450x-console.exe sol            # interactive serial console
+.\bin\rd450x-console.exe sol --info     # device info + power state, no console
+.\bin\rd450x-console.exe sol --force    # take over a stale SOL session
+```
+
+It reproduces the Python client's behaviour: the `Ctrl-]` escape menu
+(quit / break / literal / help), alternate-screen full-screen TUI handling, a
+decoupled render goroutine, and `WriteConsoleW`/VT-input fidelity on Windows.
+The Python client below remains as the reference implementation.
 
 ## Setup
 
