@@ -26,6 +26,9 @@ type Client struct {
 	wmu  sync.Mutex // serializes writes
 	dec  *codec.Decoder
 
+	webHost   string // for releasing the web session on close
+	webCookie string
+
 	OnFrame FrameFunc // optional; invoked on each decoded frame
 }
 
@@ -56,49 +59,85 @@ func Connect(ctx context.Context, opts Options, password string) (*Client, error
 		return nil, fmt.Errorf("dial video port: %w", err)
 	}
 
-	c := &Client{conn: conn, r: bufio.NewReaderSize(conn, 1<<16), dec: codec.New()}
+	c := &Client{
+		conn:      conn,
+		r:         bufio.NewReaderSize(conn, 1<<16),
+		dec:       codec.New(),
+		webHost:   opts.Host,
+		webCookie: sess.Cookie,
+	}
 
 	if err := c.handshake(sess, opts.User); err != nil {
 		conn.Close()
+		Logout(opts.Host, sess.Cookie)
 		return nil, err
 	}
 	return c, nil
 }
 
 func (c *Client) handshake(sess WebSession, user string) error {
-	ip, mac := localAddrInfo(c.conn)
-	pkt := buildValidatePacket(sess.Token, ip, user, mac)
-	if err := c.write(pkt); err != nil {
-		return fmt.Errorf("send validate: %w", err)
-	}
+	// The BMC handshake is reactive: on connect the card first sends
+	// SESSION_ACCEPTED (23) with the active-client list; only then does the client
+	// reply with VALIDATE_VIDEO_SESSION (18), and the card returns the validate
+	// response (19). Sending validate before 23 makes the card reject it with
+	// status 3 (INVALID_VIDEO_SESSION_INFO).
+	for {
+		h, err := readHeader(c.r)
+		if err != nil {
+			return fmt.Errorf("handshake read: %w", err)
+		}
+		switch h.Type {
+		case opSessionAccepted:
+			if h.Size > 0 {
+				if _, err := c.r.Discard(int(h.Size)); err != nil {
+					return fmt.Errorf("read session-accepted body: %w", err)
+				}
+			}
+			// With KVM reconnect enabled (oemfeatures & 32, which this BMC sets),
+			// JViewer sends a bodyless CONNECTION_COMPLETE (58) before the validate.
+			// Without it the card treats the validate as a reconnect with mismatched
+			// info and replies status 3 ("Invalid Session Information To Reconnect").
+			if err := c.sendHeader(opConnectionComplete, 0); err != nil {
+				return fmt.Errorf("send connection-complete: %w", err)
+			}
+			ip, mac := localAddrInfo(c.conn)
+			pkt := buildValidatePacket(sess.Token, ip, user, mac)
+			if err := c.write(pkt); err != nil {
+				return fmt.Errorf("send validate: %w", err)
+			}
 
-	h, err := readHeader(c.r)
-	if err != nil {
-		return fmt.Errorf("read validate response: %w", err)
-	}
-	if h.Type != opValidateVideoResp {
-		return fmt.Errorf("unexpected reply type %d (want %d)", h.Type, opValidateVideoResp)
-	}
-	body := make([]byte, h.Size)
-	if _, err := io.ReadFull(c.r, body); err != nil {
-		return fmt.Errorf("read validate body: %w", err)
-	}
-	if len(body) == 0 || body[0] != 1 { // 1 = VALID_SESSION
-		return fmt.Errorf("session rejected by BMC (status %v)", body)
-	}
-	log.Printf("kvm: video session validated")
+		case opValidateVideoResp:
+			body := make([]byte, h.Size)
+			if _, err := io.ReadFull(c.r, body); err != nil {
+				return fmt.Errorf("read validate body: %w", err)
+			}
+			if len(body) == 0 || body[0] != 1 { // 1 = VALID_SESSION
+				return fmt.Errorf("session rejected by BMC (status %v)", body)
+			}
+			log.Printf("kvm: video session validated")
+			if err := c.sendHeader(opResumeRedirection, 0); err != nil {
+				return fmt.Errorf("send resume: %w", err)
+			}
+			return nil
 
-	if err := c.sendHeader(opResumeRedirection, 0); err != nil {
-		return fmt.Errorf("send resume: %w", err)
+		case opStopSession:
+			return fmt.Errorf("BMC refused session (stop, status %d)", h.Status)
+
+		default:
+			if h.Size > 0 {
+				if _, err := c.r.Discard(int(h.Size)); err != nil {
+					return fmt.Errorf("skip handshake msg %d: %w", h.Type, err)
+				}
+			}
+		}
 	}
-	return nil
 }
 
 // Run drives the read loop and a keep-alive ticker until ctx is cancelled or the
 // socket fails.
 func (c *Client) Run(ctx context.Context) error {
 	go c.keepAlive(ctx)
-	defer c.conn.Close()
+	defer c.Close()
 
 	errc := make(chan error, 1)
 	go func() { errc <- c.readLoop() }()
@@ -164,9 +203,12 @@ func (c *Client) handleFrame(seq int, frame []byte) {
 	f, err := c.dec.Decode(frame)
 	if err != nil {
 		if seq == 1 || seq%60 == 0 {
-			log.Printf("kvm: frame %d, %d bytes (decode pending: %v)", seq, len(frame), err)
+			log.Printf("kvm: frame %d, %d bytes (decode failed: %v)", seq, len(frame), err)
 		}
 		return
+	}
+	if seq == 1 || seq%120 == 0 {
+		log.Printf("kvm: decoded frame %d (%dx%d)", seq, f.W, f.H)
 	}
 	if c.OnFrame != nil {
 		c.OnFrame(f)
@@ -200,5 +242,10 @@ func (c *Client) write(b []byte) error {
 	return err
 }
 
-// Close tears down the socket.
-func (c *Client) Close() error { return c.conn.Close() }
+// Close tears down the socket and releases the BMC web session.
+func (c *Client) Close() error {
+	err := c.conn.Close()
+	Logout(c.webHost, c.webCookie)
+	c.webCookie = ""
+	return err
+}

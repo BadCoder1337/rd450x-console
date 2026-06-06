@@ -21,13 +21,18 @@ type WebSession struct {
 
 var (
 	reCookie = regexp.MustCompile(`'SESSION_COOKIE'\s*:\s*'([^']*)'`)
-	reToken  = regexp.MustCompile(`'(?:STOKEN|SESSION_TOKEN)'\s*:\s*'([^']*)'`)
+	reArg    = regexp.MustCompile(`<argument>([^<]*)</argument>`)
 )
 
-// Login performs the two-step MegaRAC web authentication:
+// Login authenticates to the MegaRAC web UI and obtains a KVM video-session token:
 //
 //  1. POST /rpc/WEBSES/create.asp  → SESSION_COOKIE
-//  2. GET  /rpc/getsessiontoken.asp (with the cookie) → STOKEN
+//  2. GET  /Java/jviewer.jnlp?EXTRNIP=<host>&JNLPSTR=JViewer (with the cookie)
+//
+// Fetching the launch jnlp is the step that ALLOCATES the video session on the
+// card and embeds a fresh -kvmtoken bound to it. Minting a bare token via
+// getsessiontoken.asp instead yields a token with no video-session info, which
+// the card rejects at validate time with status 3 (INVALID_VIDEO_SESSION_INFO).
 //
 // The password is sent over the BMC HTTP session only and is never logged.
 func Login(ctx context.Context, host, user, password string) (WebSession, error) {
@@ -48,17 +53,56 @@ func Login(ctx context.Context, host, user, password string) (WebSession, error)
 	}
 	cookie := m[1]
 
-	// Step 2: mint the KVM session token.
-	body, err = httpDo(ctx, hc, http.MethodGet, base+"/rpc/getsessiontoken.asp", nil,
+	// Step 2: fetch the launch jnlp to allocate the video session.
+	jnlpURL := base + "/Java/jviewer.jnlp?EXTRNIP=" + url.QueryEscape(host) + "&JNLPSTR=JViewer"
+	body, err = httpDo(ctx, hc, http.MethodGet, jnlpURL, nil,
 		map[string]string{"Cookie": "SessionCookie=" + cookie})
 	if err != nil {
-		return WebSession{}, fmt.Errorf("get session token: %w", err)
+		return WebSession{}, fmt.Errorf("launch jnlp: %w", err)
 	}
-	m = reToken.FindStringSubmatch(body)
-	if m == nil {
-		return WebSession{}, fmt.Errorf("get session token: no STOKEN in response")
+	if strings.Contains(body, "session_expired") {
+		return WebSession{}, fmt.Errorf("launch jnlp: BMC rejected the web session (session_expired) — " +
+			"likely too many stale web sessions on the card; wait for them to idle out or reduce concurrent logins")
 	}
-	return WebSession{Token: m[1], Cookie: cookie}, nil
+	args := parseJNLPArgs(body)
+	token := args["kvmtoken"]
+	if token == "" {
+		return WebSession{}, fmt.Errorf("launch jnlp: no -kvmtoken in response (len=%d, parsed %d args)", len(body), len(args))
+	}
+	webcookie := args["webcookie"]
+	if webcookie == "" {
+		webcookie = cookie
+	}
+	return WebSession{Token: token, Cookie: webcookie}, nil
+}
+
+// Logout best-effort releases a BMC web session so it does not linger and
+// exhaust the card's small session pool. Errors are ignored.
+func Logout(host, cookie string) {
+	if cookie == "" {
+		return
+	}
+	hc := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, "http://"+host+"/rpc/WEBSES/logout.asp", nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Cookie", "SessionCookie="+cookie)
+	if resp, err := hc.Do(req); err == nil {
+		resp.Body.Close()
+	}
+}
+
+// parseJNLPArgs extracts the <argument>-name</argument><argument>value</argument>
+// pairs from a JViewer jnlp into a map keyed by the flag name (leading '-' stripped).
+func parseJNLPArgs(body string) map[string]string {
+	ms := reArg.FindAllStringSubmatch(body, -1)
+	out := make(map[string]string, len(ms)/2)
+	for i := 0; i+1 < len(ms); i += 2 {
+		name := strings.TrimPrefix(strings.TrimSpace(ms[i][1]), "-")
+		out[name] = strings.TrimSpace(ms[i+1][1])
+	}
+	return out
 }
 
 func httpDo(ctx context.Context, hc *http.Client, method, u string, body io.Reader, headers map[string]string) (string, error) {

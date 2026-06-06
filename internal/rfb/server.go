@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 )
 
 // client→server message types
@@ -18,6 +19,10 @@ const (
 	msgPointerEvent             = 5
 	msgClientCutText            = 6
 )
+
+// encDesktopSize is the DesktopSize pseudo-encoding; when the client advertises
+// it in SetEncodings we may change the framebuffer dimensions mid-session.
+const encDesktopSize int32 = -223
 
 // Serve runs the RFB protocol on conn until ctx is cancelled or the connection
 // ends. src provides frames; sink receives input (may be nil).
@@ -32,10 +37,19 @@ func Serve(ctx context.Context, conn net.Conn, src Source, sink Sink) error {
 		return err
 	}
 
+	// Track the dimensions last advertised to the client so we can emit a
+	// DesktopSize rect when the BMC switches resolution mid-session.
+	f0 := src.Frame()
+	lastW, lastH := f0.W, f0.H
+
+	// desktopSizeOK is set by the reader goroutine if the client advertised the
+	// DesktopSize pseudo-encoding; read by this goroutine.
+	var desktopSizeOK atomic.Bool
+
 	// Reader goroutine: parse client messages, push update requests to reqc.
 	reqc := make(chan bool, 1) // value = incremental
 	errc := make(chan error, 1)
-	go readMessages(r, sink, reqc, errc)
+	go readMessages(r, sink, reqc, errc, &desktopSizeOK)
 
 	for {
 		select {
@@ -55,11 +69,36 @@ func Serve(ctx context.Context, conn net.Conn, src Source, sink Sink) error {
 				case <-src.Changed():
 				}
 			}
-			if err := writeFrame(w, src.Frame()); err != nil {
+			f := src.Frame()
+			if (f.W != lastW || f.H != lastH) && desktopSizeOK.Load() {
+				if err := writeDesktopSize(w, f.W, f.H); err != nil {
+					return err
+				}
+			}
+			lastW, lastH = f.W, f.H
+			if err := writeFrame(w, f); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+// writeDesktopSize emits a FramebufferUpdate carrying a single DesktopSize
+// pseudo-encoding rect (encoding -223) and no pixel data, telling the client the
+// framebuffer is now newW×newH. It must precede the next Raw update at the new
+// size.
+func writeDesktopSize(w *bufio.Writer, newW, newH int) error {
+	var hdr [16]byte
+	hdr[0] = 0                             // FramebufferUpdate
+	binary.BigEndian.PutUint16(hdr[2:], 1) // number-of-rectangles
+	binary.BigEndian.PutUint16(hdr[4:], 0) // x
+	binary.BigEndian.PutUint16(hdr[6:], 0) // y
+	binary.BigEndian.PutUint16(hdr[8:], uint16(newW))
+	binary.BigEndian.PutUint16(hdr[10:], uint16(newH))
+	enc := encDesktopSize
+	binary.BigEndian.PutUint32(hdr[12:], uint32(enc)) // encoding (-223)
+	_, err := w.Write(hdr[:])
+	return err
 }
 
 func handshake(r *bufio.Reader, w *bufio.Writer, src Source) error {
@@ -115,16 +154,16 @@ func writeServerInit(w *bufio.Writer, width, height int, name string) error {
 	binary.BigEndian.PutUint16(b[2:], uint16(height))
 	// PixelFormat (16 bytes): 32 bpp, depth 24, little-endian, true-colour,
 	// max 255 each, shifts R=16 G=8 B=0 → in-memory bytes [B,G,R,X].
-	b[4] = 32 // bits-per-pixel
-	b[5] = 24 // depth
-	b[6] = 0  // big-endian-flag = false
-	b[7] = 1  // true-colour-flag = true
+	b[4] = 32                               // bits-per-pixel
+	b[5] = 24                               // depth
+	b[6] = 0                                // big-endian-flag = false
+	b[7] = 1                                // true-colour-flag = true
 	binary.BigEndian.PutUint16(b[8:], 255)  // red-max
 	binary.BigEndian.PutUint16(b[10:], 255) // green-max
 	binary.BigEndian.PutUint16(b[12:], 255) // blue-max
-	b[14] = 16 // red-shift
-	b[15] = 8  // green-shift
-	b[16] = 0  // blue-shift
+	b[14] = 16                              // red-shift
+	b[15] = 8                               // green-shift
+	b[16] = 0                               // blue-shift
 	// b[17..19] padding
 	binary.BigEndian.PutUint32(b[20:], uint32(len(name)))
 	if _, err := w.Write(b[:]); err != nil {
@@ -158,7 +197,7 @@ func writeFrame(w *bufio.Writer, f *Frame) error {
 	return w.Flush()
 }
 
-func readMessages(r *bufio.Reader, sink Sink, reqc chan<- bool, errc chan<- error) {
+func readMessages(r *bufio.Reader, sink Sink, reqc chan<- bool, errc chan<- error, desktopSizeOK *atomic.Bool) {
 	for {
 		typ, err := r.ReadByte()
 		if err != nil {
@@ -179,11 +218,19 @@ func readMessages(r *bufio.Reader, sink Sink, reqc chan<- bool, errc chan<- erro
 				return
 			}
 			n := int(binary.BigEndian.Uint16(b[1:]))
-			if _, err := discard(r, 4*n); err != nil {
-				errc <- err
-				return
+			// Read the encoding list so we can detect DesktopSize (-223).
+			// Pixel encodings are ignored — we always send Raw, which every
+			// client supports.
+			for i := 0; i < n; i++ {
+				var e [4]byte
+				if _, err := io.ReadFull(r, e[:]); err != nil {
+					errc <- err
+					return
+				}
+				if int32(binary.BigEndian.Uint32(e[:])) == encDesktopSize {
+					desktopSizeOK.Store(true)
+				}
 			}
-			// We always send Raw, which every client supports.
 		case msgFramebufferUpdateRequest:
 			var b [9]byte
 			if _, err := io.ReadFull(r, b[:]); err != nil {

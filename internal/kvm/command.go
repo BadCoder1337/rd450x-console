@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"rd450x-console/internal/config"
+	"rd450x-console/internal/kvm/codec"
 	"rd450x-console/internal/rfb"
 	"rd450x-console/internal/webui"
 )
@@ -31,27 +32,52 @@ func RunCommand(ctx context.Context, args []string) error {
 
 	creds := config.Load(*host, *user)
 
-	// Demo framebuffer until the decoder feeds real frames.
-	src := rfb.NewTestPattern(ctx, 1024, 768)
+	var (
+		src  rfb.Source
+		sink rfb.Sink
+	)
 
 	if creds.User != "" && creds.Password != "" {
+		// Real BMC: a dynamic FrameSource fed by decoded video, and a HID Sink
+		// driving keyboard/mouse. Both are created up front so the BMC client's
+		// OnFrame and the sink are wired before Run starts.
+		const initW, initH = 1024, 768
+		fsrc := rfb.NewFrameSource(initW, initH)
+		// The BMC connects asynchronously, so the real HID sink isn't available
+		// until then. A late-binding sink discards input until it is published,
+		// avoiding a data race on the pointer.
+		late := newLateSink()
+		src = fsrc
+		sink = late
 		go connectBMC(ctx, Options{
 			Host: creds.Host, Port: *port, TLS: *useTLS, User: creds.User,
-		}, creds.Password)
+		}, creds.Password, fsrc, late)
 	} else {
 		log.Printf("kvm: IPMI_USER/IPMI_PASSWORD not set — serving test pattern only")
+		src = rfb.NewTestPattern(ctx, 1024, 768)
+		sink = rfb.NopSink()
 	}
 
-	return webui.Serve(ctx, *listen, src, rfb.NopSink(), !*noBrowser)
+	return webui.Serve(ctx, *listen, src, sink, !*noBrowser)
 }
 
-func connectBMC(ctx context.Context, opts Options, password string) {
+// connectBMC establishes the BMC session, wires decoded frames into fsrc and
+// builds the HID sink, publishing it through late for the RFB server.
+func connectBMC(ctx context.Context, opts Options, password string, fsrc *rfb.FrameSource, late *lateSink) {
 	c, err := Connect(ctx, opts, password)
 	if err != nil {
 		log.Printf("kvm: BMC connect failed: %v", err)
 		return
 	}
 	log.Printf("kvm: connected to BMC %s:%d, streaming video fragments", opts.Host, opts.Port)
+
+	hid := NewSink(c, 1024, 768)
+	c.OnFrame = func(f *codec.Frame) {
+		fsrc.Update(f.W, f.H, f.Pix)
+		hid.SetFrameSize(f.W, f.H)
+	}
+	late.set(hid)
+
 	if err := c.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("kvm: BMC session ended: %v", err)
 	}
