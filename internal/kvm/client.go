@@ -72,6 +72,16 @@ func Connect(ctx context.Context, opts Options, password string) (*Client, error
 		Logout(opts.Host, sess.Cookie)
 		return nil, err
 	}
+
+	// The web session has done its only job: minting the kvmtoken and allocating
+	// the video session, which is now validated and resumed. Release it right away
+	// rather than holding it for the whole KVM session — that way the web session
+	// never outlives its usefulness, even if the process is later killed hard
+	// (bypassing Close()). The video stream is authenticated by the IVTP session,
+	// not the web cookie.
+	Logout(opts.Host, sess.Cookie)
+	c.webCookie = ""
+	log.Printf("kvm: web session released (KVM session is up)")
 	return c, nil
 }
 

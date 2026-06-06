@@ -30,6 +30,13 @@ func RunCommand(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// A cancellable child context so a noVNC disconnect (or signal) tears down
+	// both the web server and the BMC client — the latter's deferred Close()
+	// releases the card's web session. Without this, closing the browser tab
+	// would orphan the video/web session on the BMC.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	creds := config.Load(*host, *user)
 
 	var (
@@ -58,7 +65,7 @@ func RunCommand(ctx context.Context, args []string) error {
 		sink = rfb.NopSink()
 	}
 
-	return webui.Serve(ctx, *listen, src, sink, !*noBrowser)
+	return webui.Serve(ctx, *listen, src, sink, !*noBrowser, cancel)
 }
 
 // connectBMC establishes the BMC session, wires decoded frames into fsrc and
