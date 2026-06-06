@@ -55,10 +55,14 @@ uses plain GRUB-EFI, **not** `proxmox-boot-tool` — no ESP sync step is needed.
 Back up `/etc/default/grub` first.)
 
 ```sh
-# /etc/default/grub
-GRUB_CMDLINE_LINUX="console=tty1 console=ttyS0,115200n8"
+# /etc/default/grub  (the deployed, working values)
+GRUB_CMDLINE_LINUX="console=ttyS0,115200n8 console=tty1"
 GRUB_CMDLINE_LINUX_DEFAULT="quiet systemd.show_status=yes"
 GRUB_TERMINAL="console"
+# Harmless here: GRUB_SERIAL_COMMAND is defined but inert because `serial` is not
+# in GRUB_TERMINAL, so GRUB's own serial reader is never activated (see the
+# double-read warning below). Leaving it set does nothing.
+GRUB_SERIAL_COMMAND="serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1"
 ```
 
 Then:
@@ -69,10 +73,13 @@ update-grub
 
 Rationale for each line:
 
-- **`console=tty1 console=ttyS0,115200n8`** — list `ttyS0` **last** so it becomes
-  the *primary* console: it gets `/dev/console` and a login `serial-getty`. Keeping
-  `tty1` first means the local VGA console still works too (serial is an
-  *alternative*, not a replacement).
+- **`console=ttyS0,115200n8 console=tty1`** — list **both** consoles so they both
+  receive kernel boot messages (`/sys/class/tty/console/active` then shows
+  `ttyS0 tty1`). The login prompt on SOL does **not** depend on which one the
+  kernel picks as `/dev/console`, because `serial-getty@ttyS0` is enabled
+  explicitly in Layer 3; keeping `tty1` in the list means the local VGA console
+  keeps working too (serial is an *alternative*, not a replacement). The exact
+  ordering is not critical here — this is the order the working host uses.
 - **`GRUB_CMDLINE_LINUX_DEFAULT="quiet systemd.show_status=yes"`** — `quiet` hides
   the noisy kernel dmesg flood (real errors still print); `systemd.show_status=yes`
   forces **all** systemd `[ OK ]` / `[FAILED]` lines back (plain `quiet` lets
@@ -118,7 +125,7 @@ Fix with a drop-in that forces a single rate:
 # /etc/systemd/system/serial-getty@ttyS0.service.d/override.conf
 [Service]
 ExecStart=
-ExecStart=-/sbin/agetty -o '-- \\u' --noreset --noclear 115200 - ${TERM}
+ExecStart=-/sbin/agetty -o '-- \u' --noreset --noclear 115200 - ${TERM}
 ```
 
 ```sh
