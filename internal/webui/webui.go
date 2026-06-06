@@ -24,7 +24,12 @@ import (
 // followed by a reconnect) keep the bridge — and the BMC session — alive.
 const shutdownGrace = 5 * time.Second
 
-//go:embed all:novnc
+// novnc is a git submodule (novnc/noVNC, pinned to v1.5.0). Run
+// `git submodule update --init` after cloning so these files exist at build
+// time. Plain `embed novnc` (not `all:`) skips the submodule's .git pointer
+// and .github/ — none of which are served at runtime.
+//
+//go:embed novnc
 var novncFiles embed.FS
 
 // Serve starts the web server on listen, serving noVNC and a /websockify RFB

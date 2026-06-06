@@ -15,6 +15,9 @@ today `sol` defers to the working Python client.
 ## Run
 
 ```powershell
+# noVNC is a git submodule — fetch it once after cloning (or clone with --recursive)
+git submodule update --init
+
 go build -o bin\rd450x-console.exe ./cmd/rd450x-console
 
 # KVM: serve noVNC and open it in the browser
@@ -41,7 +44,7 @@ internal/kvm/
   command.go             `kvm` subcommand wiring
 internal/rfb/            minimal RFB 3.8 server over net.Conn (Raw encoding) + test pattern
 internal/webui/          go:embed noVNC + /websockify bridge + browser open
-internal/webui/novnc/    vendored noVNC v1.5.0 (embedded into the binary)
+internal/webui/novnc/    noVNC v1.5.0 — git submodule (novnc/noVNC), embedded via go:embed
 internal/sol/            SOL mode (stub → Python client for now)
 ```
 
