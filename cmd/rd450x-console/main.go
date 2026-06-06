@@ -23,8 +23,11 @@ import (
 	"rd450x-console/internal/sol"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func usage() {
-	fmt.Fprint(os.Stderr, `rd450x-console – RD450X BMC bridge
+	fmt.Fprintf(os.Stderr, `rd450x-console %s – RD450X BMC bridge
 
 usage:
   rd450x-console kvm [flags]   open the KVM/video console in a browser (noVNC)
@@ -32,7 +35,7 @@ usage:
 
 Run "rd450x-console <mode> -h" for mode-specific flags.
 Credentials are read from IPMI_USER / IPMI_PASSWORD (or .env).
-`)
+`, version)
 }
 
 func main() {
@@ -55,6 +58,9 @@ func main() {
 		err = sol.RunCommand(ctx, os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
+		return
+	case "-v", "--version", "version":
+		fmt.Printf("rd450x-console %s\n", version)
 		return
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mode %q\n\n", os.Args[1])
