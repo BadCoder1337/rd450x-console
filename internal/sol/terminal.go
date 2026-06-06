@@ -1,37 +1,25 @@
 package sol
 
-// Cross-platform raw terminal I/O for an interactive serial console.
+// Cross-platform interactive console for a serial line.
 //
-// A terminal puts the local console into raw mode (no line buffering, no local
-// echo) and exposes:
+// The serial side speaks a byte stream of VT/ANSI escape sequences. Rather than
+// pass that stream straight to the user's real terminal (the old per-OS raw-mode
+// approach), we drive a tcell.Screen and feed the serial stream through an
+// embedded VT emulator (terminal_tcell.go): tcell owns input decoding and the
+// physical screen on every platform, so F-keys / navigation / modifiers come
+// from a single, complete event model instead of a hand-written Windows key
+// table, and mouse/resize noise can never reach the BMC because we simply never
+// enable the mouse.
 //
-//   - read(buf) – blocking read of pending keystrokes (driven from a goroutine)
-//   - write(b)  – render server output, including ANSI/VT escape sequences
-//   - close()   – restore the original console mode
+// A terminal exposes:
 //
-// On Windows, output goes through WriteConsoleW (UTF-16) with an incremental
-// UTF-8 decoder so a multi-byte char (BIOS box-drawing) split across SOL packets
-// is not mangled at a write boundary; special keys arrive pre-translated to ANSI
-// because virtual-terminal *input* is enabled. On POSIX the tty is switched to
-// raw mode with termios and stdin/stdout are used directly.
-
-// Give a full-screen TUI (BIOS Setup, etc.) a clean canvas:
+//   - read(buf) – blocking read of pending input, already encoded to the bytes
+//     the BMC expects (driven from a goroutine)
+//   - write(b)  – fold server output into the emulator and repaint the screen
+//   - close()   – tear the screen down and restore the console
 //
-//	?1049h  switch to the alternate screen buffer (so the shell screen and
-//	        scrollback are preserved and restored on exit),
-//	2J/3J   clear the screen and scrollback,
-//	H       home the cursor,
-//	?7h     ensure auto-wrap is on (serial TUIs assume a normal terminal).
-//
-// Without this, the remote draws with absolute cursor addressing over whatever
-// was already on screen, leaving stale cells everywhere.
-var (
-	enterFullscreen = []byte("\x1b[?1049h\x1b[2J\x1b[3J\x1b[H\x1b[?7h")
-	leaveFullscreen = []byte("\x1b[?1049l")
-)
-
-// terminal is the platform-specific raw console. openTerminal returns the
-// implementation for the current OS.
+// terminal is the single abstraction Console depends on; openTerminal returns
+// the tcell-backed implementation.
 type terminal interface {
 	read(buf []byte) (int, error)
 	write(b []byte) error
@@ -41,7 +29,10 @@ type terminal interface {
 // completeUTF8 splits b into a prefix of complete UTF-8 sequences and a trailing
 // remainder holding an incomplete multi-byte sequence (if any). The caller
 // prepends the remainder to the next chunk so a code point split across two
-// writes is rendered as one character rather than two replacement glyphs.
+// writes (e.g. a BIOS box-drawing char spanning two SOL packets) is decoded as
+// one rune. This must run before bytes reach the VT emulator: vt10x's Write
+// drops the leading byte(s) of an incomplete trailing rune rather than holding
+// them back, so without this a split multi-byte char is corrupted.
 func completeUTF8(b []byte) (head, tail []byte) {
 	// Scan back over at most the last 4 bytes for the start of the final rune.
 	for i := 1; i <= 4 && i <= len(b); i++ {
