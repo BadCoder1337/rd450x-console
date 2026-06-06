@@ -58,7 +58,11 @@ func Serve(ctx context.Context, listen string, src rfb.Source, sink rfb.Sink, op
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	url := fmt.Sprintf("http://%s/vnc.html?autoconnect=true&path=websockify&resize=scale", listen)
+	// resize=off renders the framebuffer 1:1 (no scaling), matching JViewer's
+	// pixel-perfect output. Scaling to fit (resize=scale) blurs with bilinear or,
+	// with nearest-neighbour, unevenly thickens pixel-font strokes at the
+	// fractional zoom factor — so we keep it off.
+	url := fmt.Sprintf("http://%s/vnc.html?autoconnect=true&path=websockify&resize=off", listen)
 	log.Printf("webui: open %s", url)
 	if openBrowser {
 		go openURL(url)
