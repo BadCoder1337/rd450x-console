@@ -5,6 +5,11 @@ MegaRAC BMC, written in Go. It replaces the legacy `JViewer` Java Web Start
 client, which needs an ancient JRE (1.7) and runs with JVM security disabled
 (`<all-permissions/>`).
 
+<p float="left">
+  <img width="49%" height="703" alt="image" src="https://github.com/user-attachments/assets/dd9ebf65-4932-4d49-952c-38a8c34c6c3b" />
+  <img width="49%" height="533" alt="image" src="https://github.com/user-attachments/assets/c3f5a9dc-3d7d-4b64-a69f-9dfe950c3f03" />
+</p>
+
 Two modes in one binary, no Java, no browser plugins:
 
 | Mode | What it does | Transport |
