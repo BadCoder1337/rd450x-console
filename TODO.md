@@ -19,14 +19,23 @@ tracks only what's still pending.
       path. UI is added by injecting a `<script>` into `vnc.html` at serve time
       (submodule stays pristine), reusing noVNC's own CSS classes.
       _See `docs/kvm-vmedia.md`._
-- [ ] **Virtual media** (CD/FD/HD redirection, ports 5120/5122/5123) — mount
-      local ISO/images to the host. **Frontend + browser flow done** (toolbar
-      panel, `File.slice` on-demand read responder, control protocol); **the AMI
-      IUSB data plane (`internal/kvm/vmedia`) is still to be written** — answer the
-      BMC's SCSI reads and fetch bytes via the browser read protocol. Sizing and
-      RE references in `docs/kvm-vmedia.md` (128 KiB max transfer; CD 2048/FD-HD
-      512 B blocks; random access; port AMI IUSB from `samozy/iusb` +
-      `ya-mouse/redirector`). _Source: `CLAUDE.md` target-system notes._
+- [~] **Virtual media** (CD/FD/HD redirection, ports 5120/5122/5123) — mount
+      local ISO/images to the host.
+      - [x] **CD / Floppy / HD-USB data plane works end-to-end** (`internal/kvm/vmedia`):
+        plaintext IUSB handshake + web-token auth; SCSI emulation — CD-ROM (MMC, 2048 B,
+        `NewCDROM`, port 5120) and Direct-Access floppy/HD (SBC, 512 B, `NewDisk`, ports
+        5122/5123); echo-envelope responses. Verified live (read-only): host mounts and
+        reads `bin/test.iso` (iso9660), `bin/test-fd.img` (FAT12) and `bin/test-hd.img`
+        (FAT16). Drive with `scripts/vmedia_probe_go -type cd|fd|hd`. Test media built by
+        `scripts/mkiso_go` + `scripts/mkimg_go`. Protocol in `docs/kvm-vmedia.md`.
+      - [x] Frontend + browser flow (toolbar panel, `File.slice` read responder).
+      - [ ] **Wire the data plane into the `kvm` command + browser read bridge**
+        (control plane): map `vmedia.attach/detach` → a `vmedia.Session`, back the
+        `Reader` with the browser `File.slice` protocol; re-enable the toolbar entry.
+      - [ ] Windowed LRU cache over the read protocol (collapse round-trips).
+      - [ ] **Write support** (WRITE(10) + writable backing) for floppy/HD/USB — all
+        media is read-only so far.
+      _Source: `CLAUDE.md` target-system notes; RE from decompiled JViewer + live BMC._
 
 ## KVM — video fidelity
 

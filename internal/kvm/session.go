@@ -36,6 +36,29 @@ var (
 //
 // The password is sent over the BMC HTTP session only and is never logged.
 func Login(ctx context.Context, host, user, password string) (WebSession, error) {
+	args, cookie, err := FetchLaunchArgs(ctx, host, user, password)
+	if err != nil {
+		return WebSession{}, err
+	}
+	token := args["kvmtoken"]
+	if token == "" {
+		return WebSession{}, fmt.Errorf("launch jnlp: no -kvmtoken in response (parsed %d args)", len(args))
+	}
+	webcookie := args["webcookie"]
+	if webcookie == "" {
+		webcookie = cookie
+	}
+	return WebSession{Token: token, Cookie: webcookie}, nil
+}
+
+// FetchLaunchArgs performs the two-step web login and returns the full parsed
+// JViewer jnlp argument map plus the create.asp session cookie. Beyond the
+// kvmtoken/webcookie that Login extracts, the map carries the virtual-media
+// parameters the vmedia data plane needs: kvmport, cdport/fdport/hdport,
+// cdnum/fdnum/hdnum, singleportenabled, vmsecure/kvmsecure.
+//
+// The token/cookie values in the map are secrets — callers must not log them.
+func FetchLaunchArgs(ctx context.Context, host, user, password string) (map[string]string, string, error) {
 	hc := &http.Client{Timeout: 15 * time.Second}
 	base := "http://" + host
 
@@ -45,11 +68,11 @@ func Login(ctx context.Context, host, user, password string) (WebSession, error)
 		strings.NewReader(form.Encode()),
 		map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
 	if err != nil {
-		return WebSession{}, fmt.Errorf("web login: %w", err)
+		return nil, "", fmt.Errorf("web login: %w", err)
 	}
 	m := reCookie.FindStringSubmatch(body)
 	if m == nil {
-		return WebSession{}, fmt.Errorf("web login: no SESSION_COOKIE in response (bad credentials?)")
+		return nil, "", fmt.Errorf("web login: no SESSION_COOKIE in response (bad credentials?)")
 	}
 	cookie := m[1]
 
@@ -58,22 +81,13 @@ func Login(ctx context.Context, host, user, password string) (WebSession, error)
 	body, err = httpDo(ctx, hc, http.MethodGet, jnlpURL, nil,
 		map[string]string{"Cookie": "SessionCookie=" + cookie})
 	if err != nil {
-		return WebSession{}, fmt.Errorf("launch jnlp: %w", err)
+		return nil, "", fmt.Errorf("launch jnlp: %w", err)
 	}
 	if strings.Contains(body, "session_expired") {
-		return WebSession{}, fmt.Errorf("launch jnlp: BMC rejected the web session (session_expired) — " +
+		return nil, "", fmt.Errorf("launch jnlp: BMC rejected the web session (session_expired) — " +
 			"likely too many stale web sessions on the card; wait for them to idle out or reduce concurrent logins")
 	}
-	args := parseJNLPArgs(body)
-	token := args["kvmtoken"]
-	if token == "" {
-		return WebSession{}, fmt.Errorf("launch jnlp: no -kvmtoken in response (len=%d, parsed %d args)", len(body), len(args))
-	}
-	webcookie := args["webcookie"]
-	if webcookie == "" {
-		webcookie = cookie
-	}
-	return WebSession{Token: token, Cookie: webcookie}, nil
+	return parseJNLPArgs(body), cookie, nil
 }
 
 // Logout best-effort releases a BMC web session so it does not linger and

@@ -127,6 +127,99 @@ above. From the RE references:
   INQUIRY, READ CAPACITY, MODE SENSE; CD adds the MMC probes (READ TOC, GET
   CONFIGURATION, …).
 
+### IUSB wire protocol (reverse-engineered from JViewer)
+
+Decoded from the decompiled `com.ami.iusb.*` sources under `re/` (the SCSI
+*emulation* is native — `executeCDROMSCSICmd` in `libjavacdromwrapper` — but the
+transport, handshake and framing are pure Java and reproduced below). Implemented
+in `internal/kvm/vmedia/iusb.go`.
+
+**Status: working end-to-end for CD-ROM, floppy, and HD/USB.** Verified against the
+live RD450X + Proxmox host: our `internal/kvm/vmedia` data plane serves the test
+media and the host reads them correctly (read-only):
+
+| `-type` | port | device      | block | emulator         | test image      | host node / blkid                  |
+|---------|------|-------------|-------|------------------|-----------------|------------------------------------|
+| cd      | 5120 | CD-ROM (MMC)| 2048  | `NewCDROM`       | `bin/test.iso`  | `/dev/cdrom→sr0`, iso9660 RD450X_TEST |
+| fd      | 5122 | Direct-Access| 512  | `NewDisk`        | `bin/test-fd.img`| `sd?` (Virtual Floppy0), vfat RD450X_FD |
+| hd      | 5123 | Direct-Access| 512  | `NewDisk`        | `bin/test-hd.img`| `sd?` (Virtual HDisk0), vfat RD450X_HD |
+
+Drive it with `scripts/vmedia_probe_go -type cd|fd|hd -iso <file>` (`-jnlp` dumps the
+vmedia config). Build the media with `go run ./scripts/mkiso_go` and
+`go run ./scripts/mkimg_go`. All media is **read-only** so far (CD is inherently
+read-only; floppy/HD write support — WRITE(10) + a writable backing — is future work).
+
+**Transport.** One **plaintext TCP** socket **per device** — the jnlp's
+`vmsecure=0` on this BMC means virtual media is *not* TLS-wrapped, even though the
+KVM video port is (`kvmsecure=1`). (`vmedia.Options.TLS` honours `vmsecure` for
+boards that set it.) Ports come from the jnlp: CD `cdport` **5120**, floppy
+`fdport` **5122**, HD `hdport` **5123**; `singleportenabled=0` here (dedicated
+ports, not tunnelled through the KVM port). `kvmtokentype`/token type 0 = web.
+
+**32-byte IUSB header** (`IUSBHeader`), all multi-byte fields **little-endian**:
+
+| off | size | field            | value / meaning                                  |
+|-----|------|------------------|--------------------------------------------------|
+| 0   | 8    | signature        | `"IUSB    "` (IUSB + 4 spaces)                    |
+| 8   | 1    | major            | 1                                                |
+| 9   | 1    | minor            | 0                                                |
+| 10  | 1    | packetHeaderLen  | 32                                               |
+| 11  | 1    | headerChecksum   | `(-Σ header bytes) & 0xFF` → receiver's Σ over the 32 header bytes is 0 |
+| 12  | 4    | **dataPacketLen**| payload length — **the framing length**: read 32, then this many more |
+| 16  | 1    | serverCaps       | 0                                                |
+| 17  | 1    | deviceType       | CD-ROM = **5** (FD/HD types TBD)                 |
+| 18  | 1    | protocol         | 1                                                |
+| 19  | 1    | direction        | 128 on packets we send                           |
+| 20  | 1    | deviceNumber     | 0                                                |
+| 21  | 1    | interfaceNumber  | 0                                                |
+| 22  | 1    | clientData       | 0                                                |
+| 23  | 1    | Instance         | device instance # (which CD/FD/HD slot)          |
+| 24  | 4    | sequenceNumber   | 0 on auth; echoed on responses                   |
+| 28  | 4    | reserved         | 0                                                |
+
+JViewer computes the checksum over the **header only** (the payload is written
+*after* the checksum in its buffer, so the auth token is not covered) — so the BMC
+validates at most the 32-byte header sum, never the payload. We match that.
+
+**Payload / SCSI command envelope** (confirmed from live captures — vmedia is
+plaintext, so requests are readable directly). After the 32-byte header the
+payload is a ~29-byte command envelope; the **SCSI CDB starts at payload offset
+9** (`opcode = data[9]`). For a 6-byte CDB the eject byte `data[13]` is CDB[4]; for
+READ(10) the LBA is at `data[11:15]` (big-endian) and the block count at
+`data[16:18]` (big-endian — a standard READ(10) CDB sitting at offset 9):
+
+| payload off | field                                                |
+|-------------|------------------------------------------------------|
+| 0           | transfer/data length, u32 LE (bytes the host wants)  |
+| 4           | command counter (increments per request)             |
+| 8           | command marker `0x01`                                 |
+| 9           | **SCSI CDB** (opcode … LBA@11:15 BE … len@16:18 BE)   |
+| 25          | (response) length the BMC forwards to the host, LE    |
+
+**Response framing.** The reply payload **echoes the request envelope and appends
+the SCSI data-in bytes**, and must set the length field **at offset 25** to the
+appended byte count — that is the field the BMC forwards to the host. (Setting only
+offset 0 yields a zero-length read → `DID_ERROR` on the host. We set both.)
+Status-only commands (TEST UNIT READY, …) echo the envelope with no data. The BMC
+firmware answers enumeration (INQUIRY → "AMI Virtual CDROM0") itself and forwards
+TEST UNIT READY as a ~30 s media-present poll plus the real data commands
+(READ(10)/READ(12), READ CAPACITY, …) to us.
+
+**Handshake** (`CDROMRedir.startRedirection` / `SendAuth_SessionToken`):
+
+1. Client → **auth**: a 32 + 128-byte packet. `deviceType=5`, `Instance=dev#`,
+   `dataPacketLen=128`; `data[9]=0xF2` (auth opcode); `data[30]=0`; the web
+   **STOKEN** string at `data[31..]`. (Token type 0 = web session; type 1 = SSI,
+   `dataPacketLen=240`.)
+2. Server → **ACK** `data[9]=0xF1` (`DEVICE_REDIRECTION_ACK`). `connectionStatus`
+   at `data[30]`: **1 = OK**, 5/8 = device error, anything else = already in use by
+   the IP string at `data[31..]` (`m_otherIP`).
+3. Loop: server sends IUSB SCSI **requests**, client emulates the SCSI/MMC command
+   and sends an IUSB **response** (its own header + data) back. Eject = opcode
+   `0x1B` (START STOP UNIT) with `data[13]==2`; kill = opcode `0xF6`.
+
+Opcodes: `0xF2` auth · `0xF1` ack · `0xF6` kill-redir · `0x1B` start-stop-unit.
+
 ### Optional localhost turbo path
 
 When the binary and browser are on the same machine, a future mode could let the
@@ -143,8 +236,18 @@ internal/webui/webui.go            /control + /rd450x/ asset routes + vnc.html i
 internal/webui/assets/inject.js    toolbar UI (power panel, vmedia panel, read responder)
 internal/webui/assets/inject.css   styling deltas on top of noVNC classes
 internal/kvm/command.go            wires power.Controller → webui.ControlHandler
-internal/kvm/vmedia/               AMI IUSB sector-serving data plane — TODO
+internal/kvm/vmedia/iusb.go        IUSB header codec, framing, opcodes, envelope offsets
+internal/kvm/vmedia/auth.go        web-token auth packet + ACK/connection-status parse
+internal/kvm/vmedia/session.go     plaintext/TLS connect, handshake, request/response loop
+internal/kvm/vmedia/scsi.go        read-only CD-ROM SCSI/MMC emulation + echo-envelope response
+internal/kvm/vmedia/reader.go      Reader interface + FileReader (localhost turbo path)
+scripts/vmedia_probe_go/           bring-up driver: login → redirect a local ISO → serve (works)
 ```
+
+**Done:** CD-ROM, floppy and HD/USB read paths (handshake, TUR, READ(10/12), READ
+CAPACITY, MODE SENSE; CD adds the MMC probes) verified live with a backing
+FileReader. **Next:** wire into the `kvm` command + browser read bridge (control
+plane), the windowed LRU cache, and write support (WRITE(10)) for floppy/HD/USB.
 
 ## References
 
