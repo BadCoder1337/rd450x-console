@@ -24,12 +24,14 @@ const (
 	scsiPreventAllow   = 0x1E
 	scsiReadCapacity10 = 0x25
 	scsiRead10         = 0x28
+	scsiWrite10        = 0x2A
 	scsiReadTOC        = 0x43
 	scsiGetConfig      = 0x46
 	scsiGetEventStatus = 0x4A
 	scsiReadDiscInfo   = 0x51
 	scsiModeSense10    = 0x5A
 	scsiRead12         = 0xA8
+	scsiWrite12        = 0xAA
 )
 
 // Device emulates a read-only USB mass-storage device backed by a Reader,
@@ -45,25 +47,35 @@ const (
 // and spec-correct, while the IUSB response framing is in buildResponse.
 type Device struct {
 	r         Reader
+	w         WriterAt // non-nil ⇒ writable (honours WRITE(10/12))
 	blockSize int
 	mmc       bool   // CD-ROM: also answer the MMC probes
 	lastLBA   uint32 // highest addressable block
-	nBytes    int64  // bytes served (stats)
+	nBytes    int64  // bytes served (read+written; stats)
 }
 
-// NewCDROM builds a CD-ROM emulator (2048-byte blocks, MMC) over r.
-func NewCDROM(r Reader) *Device { return newDevice(r, cdBlockSize, true) }
+// WriterAt is the write half of a writable backing (io.WriterAt-shaped).
+type WriterAt interface {
+	WriteAt(p []byte, off int64) (int, error)
+}
 
-// NewDisk builds a Direct-Access (floppy / HD / USB) emulator (512-byte blocks,
-// no MMC) over r.
-func NewDisk(r Reader) *Device { return newDevice(r, diskBlockSize, false) }
+// NewCDROM builds a read-only CD-ROM emulator (2048-byte blocks, MMC) over r.
+func NewCDROM(r Reader) *Device { return newDevice(r, nil, cdBlockSize, true) }
 
-func newDevice(r Reader, blockSize int, mmc bool) *Device {
+// NewDisk builds a read-only Direct-Access (floppy / HD / USB) emulator (512-byte
+// blocks, no MMC) over r.
+func NewDisk(r Reader) *Device { return newDevice(r, nil, diskBlockSize, false) }
+
+// NewDiskRW builds a writable Direct-Access emulator over rw, honouring the host's
+// SCSI WRITE(10)/WRITE(12) by writing back through rw.WriteAt.
+func NewDiskRW(rw ReadWriter) *Device { return newDevice(rw, rw, diskBlockSize, false) }
+
+func newDevice(r Reader, w WriterAt, blockSize int, mmc bool) *Device {
 	last := uint32(0)
 	if n := r.Size() / int64(blockSize); n > 0 {
 		last = uint32(n - 1)
 	}
-	return &Device{r: r, blockSize: blockSize, mmc: mmc, lastLBA: last}
+	return &Device{r: r, w: w, blockSize: blockSize, mmc: mmc, lastLBA: last}
 }
 
 // BytesServed reports how many image bytes have been sent to the host.
@@ -101,11 +113,23 @@ func (c *Device) Handle(req *Packet) ([]byte, error) {
 		blocks := binary.BigEndian.Uint32(cdb[6:10])
 		return c.buildResponse(req, c.read(lba, blocks)), nil
 
+	case scsiWrite10:
+		lba := binary.BigEndian.Uint32(cdb[2:6])
+		blocks := uint32(binary.BigEndian.Uint16(cdb[7:9]))
+		c.write(req, lba, blocks)
+		return c.buildResponse(req, nil), nil
+
+	case scsiWrite12:
+		lba := binary.BigEndian.Uint32(cdb[2:6])
+		blocks := binary.BigEndian.Uint32(cdb[6:10])
+		c.write(req, lba, blocks)
+		return c.buildResponse(req, nil), nil
+
 	case scsiModeSense6:
-		return c.buildResponse(req, modeSense6()), nil
+		return c.buildResponse(req, c.modeSense6()), nil
 
 	case scsiModeSense10:
-		return c.buildResponse(req, modeSense10()), nil
+		return c.buildResponse(req, c.modeSense10()), nil
 
 	// MMC-only (CD-ROM). Direct-Access hosts won't send these; reply only when
 	// emulating a CD so a stray probe on a disk gets an empty (harmless) reply.
@@ -174,6 +198,33 @@ func (c *Device) read(lba, blocks uint32) []byte {
 	}
 	c.nBytes += int64(got)
 	return buf
+}
+
+// write applies a WRITE(10)/WRITE(12): the host's data for the command rides in
+// the request payload, appended after the command envelope (mirroring how READ
+// responses append their data). We take the trailing blocks*blockSize bytes —
+// robust to the exact envelope size — and write them at lba*blockSize.
+func (c *Device) write(req *Packet, lba, blocks uint32) {
+	n := int(blocks) * c.blockSize
+	if n == 0 {
+		return
+	}
+	if c.w == nil {
+		log.Printf("vmedia: WRITE lba=%d blocks=%d on a read-only device — ignored", lba, blocks)
+		return
+	}
+	if len(req.Payload) < n {
+		log.Printf("vmedia: WRITE lba=%d blocks=%d: payload has %d bytes, need %d — skipping",
+			lba, blocks, len(req.Payload), n)
+		return
+	}
+	data := req.Payload[len(req.Payload)-n:] // trailing n bytes = the write data
+	off := int64(lba) * int64(c.blockSize)
+	wrote, err := c.w.WriteAt(data, off)
+	if err != nil {
+		log.Printf("vmedia: write lba=%d blocks=%d off=%d: %v", lba, blocks, off, err)
+	}
+	c.nBytes += int64(wrote)
 }
 
 // readCapacity returns the 8-byte READ CAPACITY(10) response: last LBA and block
@@ -293,19 +344,28 @@ func getEventStatusNoChange(cdb []byte) []byte {
 	return out
 }
 
-func modeSense6() []byte {
-	// Mode parameter header (4 bytes): mode data length, medium type, dev params,
-	// block descriptor length — empty, read-only medium.
+// wpBit is the MODE SENSE device-specific write-protect bit, set only when the
+// device is read-only — otherwise the host mounts the medium read-only.
+func (c *Device) wpBit() byte {
+	if c.w == nil {
+		return 0x80
+	}
+	return 0
+}
+
+func (c *Device) modeSense6() []byte {
+	// Mode parameter header (4 bytes): mode data length, medium type, device-
+	// specific params (WP), block descriptor length.
 	b := make([]byte, 4)
-	b[0] = 3    // mode data length (excludes this byte)
-	b[2] = 0x80 // WP: write-protected
+	b[0] = 3 // mode data length (excludes this byte)
+	b[2] = c.wpBit()
 	return b
 }
 
-func modeSense10() []byte {
+func (c *Device) modeSense10() []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint16(b[0:2], 6) // mode data length
-	b[3] = 0x80                           // WP: write-protected
+	b[3] = c.wpBit()
 	return b
 }
 

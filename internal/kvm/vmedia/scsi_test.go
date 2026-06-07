@@ -80,6 +80,62 @@ func TestTestUnitReadyEcho(t *testing.T) {
 	}
 }
 
+// memRW is an in-memory ReadWriter backing for the write test.
+type memRW struct{ b []byte }
+
+func (m *memRW) Size() int64                              { return int64(len(m.b)) }
+func (m *memRW) ReadAt(p []byte, off int64) (int, error)  { return copy(p, m.b[off:]), nil }
+func (m *memRW) WriteAt(p []byte, off int64) (int, error) { return copy(m.b[off:], p), nil }
+
+// TestWrite10 verifies the WRITE(10) path: the host's data rides at the tail of
+// the request payload (after the command envelope) and is written at lba*512.
+func TestWrite10(t *testing.T) {
+	m := &memRW{b: make([]byte, 64*diskBlockSize)}
+	d := NewDiskRW(m)
+
+	// A writable device must NOT report write-protect, or the host mounts RO.
+	if d.modeSense6()[2]&0x80 != 0 {
+		t.Error("writable device reports write-protect")
+	}
+
+	// WRITE(10): LBA 5, 1 block. CDB at payload[9]: opcode 0x2A, LBA (BE) at
+	// [11:15] = 00 00 00 05, block count (BE) at [16:18] = 00 01.
+	env := make([]byte, 29)
+	env[opcodeOffset] = scsiWrite10
+	env[14] = 0x05 // LBA low byte
+	env[17] = 0x01 // 1 block
+	data := make([]byte, diskBlockSize)
+	for i := range data {
+		data[i] = byte(i*7 + 3)
+	}
+	req := &Packet{Payload: append(append([]byte{}, env...), data...)}
+
+	if _, err := d.Handle(req); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	got := m.b[5*diskBlockSize : 6*diskBlockSize]
+	for i := range data {
+		if got[i] != data[i] {
+			t.Fatalf("written byte %d = %d, want %d (wrong offset or tail extraction)", i, got[i], data[i])
+		}
+	}
+}
+
+// A read-only disk must report write-protect and ignore WRITE.
+func TestReadOnlyDiskWriteProtect(t *testing.T) {
+	d := NewDisk(patReader{size: 64 * diskBlockSize})
+	if d.modeSense6()[2]&0x80 == 0 {
+		t.Error("read-only disk should report write-protect")
+	}
+	env := make([]byte, 29)
+	env[opcodeOffset] = scsiWrite10
+	env[17] = 0x01
+	req := &Packet{Payload: append(make([]byte, 0, 29+diskBlockSize), append(env, make([]byte, diskBlockSize)...)...)}
+	if _, err := d.Handle(req); err != nil { // must not panic / error (w is nil → ignored)
+		t.Fatalf("Handle on read-only device: %v", err)
+	}
+}
+
 func TestReadCapacity(t *testing.T) {
 	cd := NewCDROM(patReader{size: 25 * cdBlockSize}) // 25 blocks → last LBA 24
 	cap := cd.readCapacity()

@@ -22,9 +22,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,8 +37,12 @@ import (
 )
 
 func main() {
-	iso := flag.String("iso", "bin/test.iso", "image file to redirect as a CD-ROM")
+	iso := flag.String("iso", "bin/test.iso", "image file to redirect (when -dev is empty)")
+	dev := flag.String("dev", "", "redirect a PHYSICAL Windows volume by drive letter (e.g. Y:) instead of -iso; needs Administrator")
+	disk := flag.String("disk", "", "redirect a WHOLE physical USB disk (by drive letter like Y: or disk number like 4) instead of -iso/-dev; needs Administrator")
 	devType := flag.String("type", "cd", "device type: cd | fd | hd")
+	writable := flag.Bool("w", false, "writable: honour host WRITE(10) (fd/hd only)")
+	duration := flag.Duration("duration", 0, "auto-stop after this long (0 = run until Ctrl-C); useful for elevated detached runs")
 	instance := flag.Int("instance", 0, "device instance/slot")
 	quiet := flag.Bool("quiet", false, "disable per-packet hex logging")
 	jnlpOnly := flag.Bool("jnlp", false, "just log in and print the vmedia-relevant jnlp args, then exit")
@@ -68,32 +75,87 @@ func main() {
 		return
 	}
 
-	// Map the device type to its port, IUSB device code, and SCSI emulator.
-	var (
-		port   int
-		newDev func(vmedia.Reader) *vmedia.Device
-		hint   string
-	)
+	// Map the device type to its port + a host-side hint.
+	var port int
+	var hint string
 	switch *devType {
 	case "cd":
-		port, newDev, hint = vmedia.PortCD, vmedia.NewCDROM, "/dev/cdrom (sr0)"
+		port, hint = vmedia.PortCD, "/dev/cdrom (sr0)"
 	case "fd":
-		port, newDev, hint = vmedia.PortFD, vmedia.NewDisk, "the AMI 'Virtual Floppy0' /dev/sdX"
+		port, hint = vmedia.PortFD, "the AMI 'Virtual Floppy0' /dev/sdX"
 	case "hd":
-		port, newDev, hint = vmedia.PortHD, vmedia.NewDisk, "the AMI 'Virtual HDisk0' /dev/sdX"
+		port, hint = vmedia.PortHD, "the AMI 'Virtual HDisk0' /dev/sdX"
 	default:
 		log.Fatalf("invalid -type %q (want cd|fd|hd)", *devType)
 	}
-
-	reader, err := vmedia.OpenFile(*iso)
-	if err != nil {
-		log.Fatalf("open image: %v", err)
+	if *writable && *devType == "cd" {
+		log.Fatalf("-w (writable) is not valid for a CD-ROM; use -type fd or hd")
 	}
-	defer reader.Close()
-	log.Printf("serving %s as %s (%d bytes)", *iso, *devType, reader.Size())
+
+	// Open the backing: a physical volume (-dev) or an image file (-iso).
+	var (
+		reader  vmedia.Reader
+		rw      vmedia.ReadWriter // non-nil when writable
+		closer  io.Closer
+		srcName string
+	)
+	if *disk != "" {
+		// Whole physical disk: accept a disk number ("4") or a drive letter ("Y:").
+		n, err := strconv.Atoi(strings.TrimRight(*disk, `:\`))
+		if err != nil {
+			n, err = vmedia.DriveLetterToDisk(*disk)
+			if err != nil {
+				log.Fatalf("resolve disk for %s: %v", *disk, err)
+			}
+			log.Printf("drive %s is on physical disk %d", *disk, n)
+		}
+		vol, err := vmedia.OpenPhysicalDrive(n, *writable)
+		if err != nil {
+			log.Fatalf("open physical disk %d: %v", n, err)
+		}
+		reader, closer, srcName = vol, vol, fmt.Sprintf("PhysicalDrive%d", n)
+		if *writable {
+			rw = vol
+		}
+		log.Printf("WHOLE DISK PhysicalDrive%d: %d bytes (%d MiB)%s", n, vol.Size(), vol.Size()>>20,
+			map[bool]string{true: " — WRITABLE (disk taken offline)", false: " — read-only"}[*writable])
+	} else if *dev != "" {
+		vol, err := vmedia.OpenVolume(*dev, *writable)
+		if err != nil {
+			log.Fatalf("open volume %s: %v", *dev, err)
+		}
+		reader, closer, srcName = vol, vol, *dev
+		if *writable {
+			rw = vol
+		}
+		log.Printf("PHYSICAL volume %s: %d bytes (%d MiB)%s", *dev, vol.Size(), vol.Size()>>20,
+			map[bool]string{true: " — WRITABLE (locked+dismounted)", false: " — read-only"}[*writable])
+	} else {
+		var fr *vmedia.FileReader
+		var err error
+		if *writable {
+			fr, err = vmedia.OpenFileRW(*iso)
+		} else {
+			fr, err = vmedia.OpenFile(*iso)
+		}
+		if err != nil {
+			log.Fatalf("open image: %v", err)
+		}
+		reader, closer, srcName = fr, fr, *iso
+		if *writable {
+			rw = fr
+		}
+	}
+	defer closer.Close()
+	log.Printf("serving %s as %s (%d bytes)", srcName, *devType, reader.Size())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *duration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *duration)
+		defer cancel()
+	}
 
 	// One web login → STOKEN for the vmedia auth. Released on exit.
 	loginCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -117,10 +179,19 @@ func main() {
 	}
 	defer sess.Close()
 
-	dev := newDev(reader)
+	var emu *vmedia.Device
+	switch {
+	case *devType == "cd":
+		emu = vmedia.NewCDROM(reader)
+	case rw != nil:
+		emu = vmedia.NewDiskRW(rw)
+	default:
+		emu = vmedia.NewDisk(reader)
+	}
+
 	log.Printf("serving SCSI; Ctrl-C to stop. Check %s on the host now.", hint)
-	if err := sess.Serve(ctx, dev); err != nil && ctx.Err() == nil {
+	if err := sess.Serve(ctx, emu); err != nil && ctx.Err() == nil {
 		log.Printf("session ended: %v", err)
 	}
-	log.Printf("done; %d bytes served to host", dev.BytesServed())
+	log.Printf("done; %d bytes transferred", emu.BytesServed())
 }

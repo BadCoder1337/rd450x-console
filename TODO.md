@@ -29,12 +29,16 @@ tracks only what's still pending.
         (FAT16). Drive with `scripts/vmedia_probe_go -type cd|fd|hd`. Test media built by
         `scripts/mkiso_go` + `scripts/mkimg_go`. Protocol in `docs/kvm-vmedia.md`.
       - [x] Frontend + browser flow (toolbar panel, `File.slice` read responder).
+      - [x] **Write support** (WRITE(10/12) + `NewDiskRW`, write-protect cleared) for
+        floppy/HD/USB. Verified live: host mounts RW and files persist.
+      - [x] **Physical-device passthrough** (Windows, raw access, needs elevation):
+        `-dev Y:` for a single volume (lock+dismount) and `-disk Y:|N` for the WHOLE
+        physical disk (`\\.\PhysicalDriveN`, taken offline; host sees the full GPT —
+        groundwork for a WebUSB byte-source). Verified live read+write on a USB stick.
       - [ ] **Wire the data plane into the `kvm` command + browser read bridge**
         (control plane): map `vmedia.attach/detach` → a `vmedia.Session`, back the
         `Reader` with the browser `File.slice` protocol; re-enable the toolbar entry.
       - [ ] Windowed LRU cache over the read protocol (collapse round-trips).
-      - [ ] **Write support** (WRITE(10) + writable backing) for floppy/HD/USB — all
-        media is read-only so far.
       _Source: `CLAUDE.md` target-system notes; RE from decompiled JViewer + live BMC._
 
 ## KVM — video fidelity

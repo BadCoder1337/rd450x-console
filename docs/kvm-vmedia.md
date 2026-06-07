@@ -146,8 +146,33 @@ media and the host reads them correctly (read-only):
 
 Drive it with `scripts/vmedia_probe_go -type cd|fd|hd -iso <file>` (`-jnlp` dumps the
 vmedia config). Build the media with `go run ./scripts/mkiso_go` and
-`go run ./scripts/mkimg_go`. All media is **read-only** so far (CD is inherently
-read-only; floppy/HD write support — WRITE(10) + a writable backing — is future work).
+`go run ./scripts/mkimg_go`.
+
+**Write support (floppy/HD/USB).** `-w` makes the backing writable: the data plane
+honours SCSI **WRITE(10)/WRITE(12)** (`NewDiskRW`), clears the MODE SENSE
+write-protect bit, and the host's write data rides at the **tail of the request
+payload** (after the command envelope). Verified live: the remote host mounted the
+device read-write and created files that persisted in the backing. (CD-ROM stays
+read-only.)
+
+**Physical-device passthrough** (`internal/kvm/vmedia/volume_windows.go`, raw
+`\\.\…` via x/sys/windows; needs the probe **elevated (Administrator)** — the same
+reason JViewer demands admin). Two granularities:
+
+- `-dev Y:` — a single **volume** (`\\.\Y:`). Writable ⇒ the volume is
+  **locked + dismounted**; remounted on close.
+- `-disk Y:` (or `-disk 4`) — the **whole physical disk** (`\\.\PhysicalDriveN`),
+  so the host sees the entire device incl. its partition table — the granularity a
+  future **WebUSB** byte-source would expose. A drive letter is resolved to its
+  disk number (`IOCTL_STORAGE_GET_DEVICE_NUMBER`). Writable ⇒ the disk is taken
+  **offline** (`IOCTL_DISK_SET_DISK_ATTRIBUTES`, which dismounts all its volumes);
+  back online on close.
+
+Both verified live on a Kingston USB stick: read (the whole-disk path reads the
+full GPT and all partitions) and write (the host created files that persisted on
+the physical drive after Windows brought it back). Launch elevated, e.g.:
+`Start-Process -Verb RunAs cmd '/c cd /d <repo> && bin\vmedia_probe.exe -disk Y: -type hd -w -duration 120s'`.
+(The elevated process starts in System32, so `cd /d <repo>` is needed for `.env`.)
 
 **Transport.** One **plaintext TCP** socket **per device** — the jnlp's
 `vmsecure=0` on this BMC means virtual media is *not* TLS-wrapped, even though the
@@ -239,15 +264,17 @@ internal/kvm/command.go            wires power.Controller → webui.ControlHandl
 internal/kvm/vmedia/iusb.go        IUSB header codec, framing, opcodes, envelope offsets
 internal/kvm/vmedia/auth.go        web-token auth packet + ACK/connection-status parse
 internal/kvm/vmedia/session.go     plaintext/TLS connect, handshake, request/response loop
-internal/kvm/vmedia/scsi.go        read-only CD-ROM SCSI/MMC emulation + echo-envelope response
-internal/kvm/vmedia/reader.go      Reader interface + FileReader (localhost turbo path)
-scripts/vmedia_probe_go/           bring-up driver: login → redirect a local ISO → serve (works)
+internal/kvm/vmedia/scsi.go        CD-ROM (MMC) + Direct-Access (floppy/HD) SCSI emulation, read+write
+internal/kvm/vmedia/reader.go      Reader/ReadWriter + FileReader (localhost turbo path, RO/RW)
+internal/kvm/vmedia/volume_windows.go  raw passthrough: volume (\\.\Y:, lock+dismount) & whole disk (\\.\PhysicalDriveN, offline)
+scripts/vmedia_probe_go/           bring-up driver: -type cd|fd|hd, -iso/-dev/-disk, -w, -duration (works)
 ```
 
-**Done:** CD-ROM, floppy and HD/USB read paths (handshake, TUR, READ(10/12), READ
-CAPACITY, MODE SENSE; CD adds the MMC probes) verified live with a backing
-FileReader. **Next:** wire into the `kvm` command + browser read bridge (control
-plane), the windowed LRU cache, and write support (WRITE(10)) for floppy/HD/USB.
+**Done:** CD-ROM, floppy and HD/USB read+write paths (handshake, TUR, READ(10/12),
+WRITE(10/12), READ CAPACITY, MODE SENSE; CD adds the MMC probes) verified live with
+both a file backing and raw physical-volume passthrough (`-dev Y:`, elevated).
+**Next:** wire into the `kvm` command + browser read bridge (control plane) and add
+a windowed LRU cache.
 
 ## References
 
