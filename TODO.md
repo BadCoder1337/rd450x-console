@@ -6,18 +6,27 @@ tracks only what's still pending.
 
 ## KVM — feature parity with JViewer
 
-- [ ] **Power control buttons in noVNC** (the JViewer "Power" menu): Power On,
-      Power Off, Immediate (hard) Shutdown, ACPI Graceful Shutdown, Reset, Power
-      Cycle. Needs IPMI chassis power control — either RMCP+ over UDP 623
-      (`github.com/bougou/go-ipmi`, already vendored for SOL) or the BMC web API
-      (`opPowerControl`/`opPowerStatus`, IVTP 34/35, are already defined). Wire
-      as a toolbar/panel in the embedded noVNC.
-      _Source: user request; `internal/kvm/client.go` "dispatch control messages (power...)"._
-- [ ] **Evaluate an alternative/extended frontend** for fuller JViewer parity
-      (power, virtual media, recording, on-screen keyboard) instead of bending
-      stock noVNC, if the button set grows large. _Source: user note._
+- [x] **Power control buttons in noVNC** (the JViewer "Power" menu): Power On,
+      ACPI Graceful Shutdown, Power Off (hard), Reset, Power Cycle. Done via an
+      injected noVNC toolbar panel → `/control` WebSocket → `internal/power`
+      (IPMI chassis control over RMCP+ UDP 623, `github.com/bougou/go-ipmi`).
+      JViewer's six entries collapse onto five distinct IPMI commands ("Power Off"
+      and "Immediate Shutdown" are the same hard power-down). _See `docs/kvm-vmedia.md`._
+- [x] **Evaluate an alternative/extended frontend.** Decided: **extend stock
+      noVNC**, don't replace it. No open KVM frontend speaks AMI's
+      client-streams-sectors virtual-media model, so that data plane is ours
+      regardless; adopting another frontend would also lose the working RFB video
+      path. UI is added by injecting a `<script>` into `vnc.html` at serve time
+      (submodule stays pristine), reusing noVNC's own CSS classes.
+      _See `docs/kvm-vmedia.md`._
 - [ ] **Virtual media** (CD/FD/HD redirection, ports 5120/5122/5123) — mount
-      remote ISO/images to the host. Not implemented. _Source: `CLAUDE.md` target-system notes._
+      local ISO/images to the host. **Frontend + browser flow done** (toolbar
+      panel, `File.slice` on-demand read responder, control protocol); **the AMI
+      IUSB data plane (`internal/kvm/vmedia`) is still to be written** — answer the
+      BMC's SCSI reads and fetch bytes via the browser read protocol. Sizing and
+      RE references in `docs/kvm-vmedia.md` (128 KiB max transfer; CD 2048/FD-HD
+      512 B blocks; random access; port AMI IUSB from `samozy/iusb` +
+      `ya-mouse/redirector`). _Source: `CLAUDE.md` target-system notes._
 
 ## KVM — video fidelity
 

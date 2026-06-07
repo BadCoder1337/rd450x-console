@@ -1,0 +1,57 @@
+/* rd450x-console toolbar extension.
+ *
+ * Styles layered on top of noVNC's own classes (noVNC_button / noVNC_panel /
+ * noVNC_heading) so the injected Power and Virtual Media controls render
+ * identically to the native toolbar. Only the few extra bits noVNC doesn't
+ * already style live here. */
+
+/* Match the 25x25 native control-bar icon box for our data-URI icon. */
+#noVNC_control_bar #rd450x_vmedia_button {
+  width: 25px;
+  height: 25px;
+  box-sizing: content-box;
+}
+
+/* Uniform width for the action buttons inside our panels. */
+#rd450x_power input[type=button],
+#rd450x_vmedia input[type=button] {
+  min-width: 170px;
+}
+
+#rd450x_vmedia_file,
+#rd450x_vmedia_kind {
+  max-width: 220px;
+}
+
+/* A small status read-out: a coloured state dot + label. */
+.rd450x_status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #222;
+  background: #f0f0f0;
+  border: 1px solid #e0e0e0;
+  border-radius: 5px;
+  padding: 6px 9px;
+  max-width: 220px;
+  word-break: break-word;
+}
+
+.rd450x_dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #9e9e9e; /* unknown */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.rd450x_status[data-state="on"] .rd450x_dot {
+  background: #43a047;
+}
+.rd450x_status[data-state="off"] .rd450x_dot {
+  background: #cc3333;
+}
+.rd450x_status[data-state="pending"] .rd450x_dot {
+  background: #e0a000;
+}

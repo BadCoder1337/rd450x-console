@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,18 @@ const shutdownGrace = 5 * time.Second
 //go:embed novnc
 var novncFiles embed.FS
 
+// assetFiles holds our own toolbar extension (power + virtual-media UI) injected
+// into the otherwise-pristine noVNC page at serve time. Kept outside the novnc
+// submodule so it stays untouched and updatable.
+//
+//go:embed assets/inject.js assets/inject.css
+var assetFiles embed.FS
+
+// injectSnippet is spliced in just before </body> of noVNC's vnc.html. It pulls
+// in our stylesheet and toolbar script without modifying the embedded submodule.
+const injectSnippet = `<link rel="stylesheet" href="rd450x/inject.css">` +
+	`<script defer src="rd450x/inject.js"></script>` + "\n</body>"
+
 // Serve starts the web server on listen, serving noVNC and a /websockify RFB
 // endpoint backed by src/sink. It blocks until ctx is cancelled.
 //
@@ -39,8 +52,15 @@ var novncFiles embed.FS
 // (the browser tab is closed or navigates away). The caller uses it to tear the
 // whole bridge down — cancelling ctx so the BMC client closes and releases its
 // web session — instead of leaving an orphaned video/web session on the card.
-func Serve(ctx context.Context, listen string, src rfb.Source, sink rfb.Sink, openBrowser bool, onDisconnect func()) error {
+//
+// control, if non-nil, backs the /control WebSocket (power and virtual-media
+// actions from the injected toolbar). A nil control disables those actions.
+func Serve(ctx context.Context, listen string, src rfb.Source, sink rfb.Sink, openBrowser bool, onDisconnect func(), control ControlHandler) error {
 	sub, err := fs.Sub(novncFiles, "novnc")
+	if err != nil {
+		return err
+	}
+	assets, err := fs.Sub(assetFiles, "assets")
 	if err != nil {
 		return err
 	}
@@ -55,6 +75,22 @@ func Serve(ctx context.Context, listen string, src rfb.Source, sink rfb.Sink, op
 
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(sub)))
+	// Our toolbar extension assets, and the injected variant of vnc.html.
+	mux.Handle("/rd450x/", http.StripPrefix("/rd450x/", http.FileServer(http.FS(assets))))
+	mux.HandleFunc("/vnc.html", func(w http.ResponseWriter, r *http.Request) {
+		serveInjectedVNC(w, r, sub)
+	})
+	// Out-of-band control plane (power / virtual media), separate from the RFB
+	// video socket so a control action never stalls framebuffer updates.
+	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			log.Printf("webui: control ws accept: %v", err)
+			return
+		}
+		defer c.CloseNow()
+		serveControl(r.Context(), c, control)
+	})
 	mux.HandleFunc("/websockify", func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			InsecureSkipVerify: true, // localhost only
@@ -126,6 +162,19 @@ func Serve(ctx context.Context, listen string, src rfb.Source, sink rfb.Sink, op
 		return err
 	}
 	return nil
+}
+
+// serveInjectedVNC serves noVNC's vnc.html with our toolbar extension spliced in
+// before </body>, leaving the embedded submodule untouched on disk.
+func serveInjectedVNC(w http.ResponseWriter, r *http.Request, sub fs.FS) {
+	b, err := fs.ReadFile(sub, "vnc.html")
+	if err != nil {
+		http.Error(w, "vnc.html not found", http.StatusInternalServerError)
+		return
+	}
+	html := strings.Replace(string(b), "</body>", injectSnippet, 1)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(html))
 }
 
 func openURL(url string) {

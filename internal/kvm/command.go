@@ -7,9 +7,22 @@ import (
 
 	"rd450x-console/internal/config"
 	"rd450x-console/internal/kvm/codec"
+	"rd450x-console/internal/power"
 	"rd450x-console/internal/rfb"
 	"rd450x-console/internal/webui"
 )
+
+// powerControl adapts *power.Controller to webui.ControlHandler, mapping the
+// toolbar's string actions onto typed chassis-control commands.
+type powerControl struct{ c *power.Controller }
+
+func (p powerControl) Power(ctx context.Context, action string) error {
+	return p.c.Do(ctx, power.Action(action))
+}
+
+func (p powerControl) PowerStatus(ctx context.Context) (bool, error) {
+	return p.c.Status(ctx)
+}
 
 // RunCommand implements `rd450x-console kvm`.
 //
@@ -41,11 +54,15 @@ func RunCommand(ctx context.Context, args []string) error {
 	creds := config.Load(*host, *user)
 
 	var (
-		src  rfb.Source
-		sink rfb.Sink
+		src     rfb.Source
+		sink    rfb.Sink
+		control webui.ControlHandler
 	)
 
 	if creds.Host != "" && creds.User != "" && creds.Password != "" {
+		// Power control rides standard IPMI chassis control over RMCP+ (UDP 623),
+		// independent of the KVM video port.
+		control = powerControl{power.New(creds.Host, config.PortOr(623), creds.User, creds.Password)}
 		// Real BMC: a dynamic FrameSource fed by decoded video, and a HID Sink
 		// driving keyboard/mouse. Both are created up front so the BMC client's
 		// OnFrame and the sink are wired before Run starts.
@@ -66,7 +83,7 @@ func RunCommand(ctx context.Context, args []string) error {
 		sink = rfb.NopSink()
 	}
 
-	return webui.Serve(ctx, *listen, src, sink, !*noBrowser, cancel)
+	return webui.Serve(ctx, *listen, src, sink, !*noBrowser, cancel, control)
 }
 
 // connectBMC establishes the BMC session, wires decoded frames into fsrc and
