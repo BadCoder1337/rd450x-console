@@ -30,7 +30,7 @@ noVNC and extend it.
             internal/kvm           power               vmedia
           (IVTP/ASPEED 7582)   internal/power      internal/kvm/vmedia
                   │            (IPMI chassis,        (AMI IUSB 5120/5122/5123,
-                  ▼             RMCP+ 623)            *not yet implemented*)
+                  ▼             RMCP+ 623)            browser-backed sectors)
                  BMC ◀──────────────┴───────────────────────┘
 ```
 
@@ -44,10 +44,11 @@ serve time `webui.go` rewrites only the response for `/vnc.html`, splicing a
 stylesheet + script tag in just before `</body>`:
 
 ```html
-<link rel="stylesheet" href="rd450x/inject.css"><script defer src="rd450x/inject.js"></script>
+<link rel="stylesheet" href="rd450x/inject.css"><script type="module" src="rd450x/js/main.js"></script>
 ```
 
-`internal/webui/assets/inject.{js,css}` (a separate `go:embed`) build the toolbar
+`internal/webui/assets/inject.css` + the ES modules under `internal/webui/assets/js/`
+(a separate `go:embed assets/inject.css assets/js`) build the toolbar
 entries **using noVNC's own classes** (`noVNC_button`, `noVNC_panel`,
 `noVNC_open`, `noVNC_selected`, `noVNC_heading`) so they render identically to the
 native controls, and insert them next to the settings button (inside
@@ -85,28 +86,73 @@ browser first. Control messages (JSON over `/control`):
 { "type": "power.status", "ok": true, "on": true }
 ```
 
-## Virtual media — UI + browser flow implemented, data plane pending
+## Virtual media — wired end-to-end (browser source ↔ Go data plane)
 
-The toolbar's Virtual Media panel picks a local `.iso`/`.img` via
-`<input type=file>` (portable; the File System Access API is Chrome/Edge-only) and
-sends an attach control message. The **efficient on-demand read flow** is the same
-one OpenBMC's Redfish "proxy mode" uses (browser acts as the data source):
+The toolbar's Virtual Media panel picks a local image file and sends an attach
+control message; the Go side opens the AMI IUSB redirection and answers the BMC's
+SCSI reads by pulling the needed sectors back from the browser on demand. The panel
+mirrors the Power panel's look (a heading, stacked uniform-width controls, and a
+per-device status list) and mounts **read-only**: a `<input type=file>` File is served
+via `File.slice(offset, offset+len)`, so a multi-GB image is **never uploaded in
+full** — only the sectors the host reads cross the wire (the model OpenBMC's Redfish
+"proxy mode" uses). If the picked file changes mid-mount, `slice()` throws and the
+responder reports an I/O error.
 
-- `File.slice(offset, offset+len).arrayBuffer()` reads **only that byte range**,
-  lazily from disk — confirmed by the W3C File API spec and OpenBMC's `jsnbd`.
-  The multi-GB image is **never uploaded or loaded in full**; only the sectors the
-  host actually reads cross the wire.
-- The browser keeps the `File` snapshot for the whole mount. If the file is
-  changed/removed mid-mount, `slice()` reads throw `NotReadableError`/
-  `NotFoundError`; the responder reports a read error.
+**cd/fd/hd mount in parallel:** each kind runs its own backing, keyed by a one-byte
+device tag the server stamps into every sector request (see the wire protocol below).
 
-Read wire protocol over `/control` (binary, big-endian), wired in `inject.js` and
-**ready for the Go backend**:
+**Read-only by design; writes go server-side.** The browser path serves **reads
+only** — no WebUSB and no browser-side writes. (An earlier iteration added a WebUSB
+mass-storage source and a File System Access read-write image; both were removed —
+WebUSB mass storage is unclaimable on a stock Windows host without a driver swap, and
+an FSA writable only commits on `close()`, breaking read-after-write within a mount.)
+**Host writes go through the server-side path** instead: `scripts/vmedia_probe_go
+-iso <img> -w` (or `-dev`/`-disk` for physical passthrough), which honours SCSI
+WRITE(10/12) directly against the backing. The Go data plane and the `/control` wire
+protocol keep their write op for that path; the browser simply never issues it.
+
+**Limitation — mass storage only.** The AMI IUSB protocol redirects **mass-storage
+devices** (CD/FD/HD SCSI) only; generic USB devices such as **hardware tokens**
+(CCID/HID) cannot be redirected through it — that would need a separate
+generic-USB-over-IP capability the MegaRAC does not expose here.
+
+Binary wire protocol over `/control` (big-endian), implemented in
+`assets/js/control-socket.js` (browser) and `internal/webui/control.go` +
+`browserbacking.go` (Go). A one-byte op tag distinguishes reads from writes (writes
+carry the host's data in the tail); a one-byte `dev` tag selects the target backing
+so **cd/fd/hd can be mounted in parallel** over one control socket. The response
+needs no `dev` byte — `reqId` is globally unique on the server side and routes it
+back to the waiting request:
 
 ```
-request  (server → browser): [u32 reqId][u64 offset][u32 len]   (16 bytes)
-response (browser → server): [u32 reqId][u8 status][bytes…]      (status 0=ok, 1=error)
+request  (server → browser): [u8 op][u8 dev][u32 reqId][u64 offset][u32 len][data… if write]
+                             op  0 = read, 1 = write
+                             dev 0 = cd,   1 = fd, 2 = hd   (kindToDev in control.go)
+response (browser → server): [u32 reqId][u8 status][bytes… if read]   (status 0=ok, 1=error)
 ```
+
+The JSON control plane carries the attach/detach lifecycle:
+
+```jsonc
+// browser → server  (the browser mounts read-only, so it never sets writable)
+{ "type": "vmedia.attach", "kind": "cd|fd|hd", "name": "...", "size": 12345 }
+{ "type": "vmedia.detach", "kind": "cd|fd|hd" }
+// server → browser
+{ "type": "vmedia.status", "kind": "...", "state": "mounted|unmounted|error", "error": "..." }
+```
+
+The browser-backed medium is a `vmedia.ReadWriter` (`internal/webui/browserbacking.go`)
+whose `ReadAt`/`WriteAt` are one `/control` round-trip each. `internal/kvm/vmediactl.go`
+**reuses the live KVM client's web session** rather than opening a new web login per
+attach: the token minted for the video session (and the per-device ports + `vmsecure`
+from the same jnlp) also authenticate the IUSB redirection. The KVM client therefore
+no longer releases its web session after the video handshake (`internal/kvm/client.go`)
+— it keeps it for vmedia reuse and logs out only on `Client.Close()` (KVM teardown),
+which avoids hitting the fragile MegaRAC web stack again. Attach opens `vmedia.Connect`
+and runs `Session.Serve` against the browser backing in a goroutine until detach (which
+just stops the loop; the shared session is untouched). Several mounts (e.g. a CD and an
+HD) can be active at once over one control socket; closing the tab detaches them all,
+and the web session is released when the KVM client shuts down.
 
 ### Sizing the data plane (from RE)
 
@@ -244,6 +290,11 @@ TEST UNIT READY as a ~30 s media-present poll plus the real data commands
    `0x1B` (START STOP UNIT) with `data[13]==2`; kill = opcode `0xF6`.
 
 Opcodes: `0xF2` auth · `0xF1` ack · `0xF6` kill-redir · `0x1B` start-stop-unit.
+The whole `0xF0`–`0xFF` range is AMI redirection-control (not SCSI) — e.g. `0xF3` is
+a periodic poll the BMC emits and `0xF4` is `SET_HARDDISK_TYPE`. They sit in the SCSI
+opcode slot (`payload[9]`) but only need an empty echo-envelope ack; JViewer routes
+them through its native SCSI handler, which does the same (`scsi.go` acks `0xF0+`
+without a warning rather than treating them as unhandled SCSI).
 
 ### Optional localhost turbo path
 
@@ -256,11 +307,17 @@ browser", so it would be an opt-in alternative, not the default.
 
 ```
 internal/power/power.go            IPMI chassis power control (RMCP+ 623)
-internal/webui/control.go          /control WebSocket: JSON dispatch (power; vmedia stub)
-internal/webui/webui.go            /control + /rd450x/ asset routes + vnc.html injection
-internal/webui/assets/inject.js    toolbar UI (power panel, vmedia panel, read responder)
+internal/webui/control.go          /control WebSocket: per-conn JSON+binary demux, vmedia attach/detach, request correlation
+internal/webui/browserbacking.go   vmedia.ReadWriter backed by browser File.slice over /control (reads; write op kept for the server path)
+internal/webui/webui.go            /control + /rd450x/ asset routes + vnc.html injection (Serve takes ControlHandler + VMediaController)
+internal/webui/assets/js/          toolbar UI as ES modules (entry main.js):
+                                     control-socket.js (/control WS + binary read plane),
+                                     power.js, vmedia.js (read-only image mount, parallel cd/fd/hd, Power-panel look),
+                                     backings/file.js (read-only <input type=file> backing),
+                                     panel.js / dom.js (shared noVNC-panel helpers)
 internal/webui/assets/inject.css   styling deltas on top of noVNC classes
-internal/kvm/command.go            wires power.Controller → webui.ControlHandler
+internal/kvm/command.go            wires power.Controller → ControlHandler, vmediaControl → VMediaController
+internal/kvm/vmediactl.go          VMediaController: reuses the KVM client's web session (token+ports+vmsecure), vmedia.Connect, Serve loop, detach
 internal/kvm/vmedia/iusb.go        IUSB header codec, framing, opcodes, envelope offsets
 internal/kvm/vmedia/auth.go        web-token auth packet + ACK/connection-status parse
 internal/kvm/vmedia/session.go     plaintext/TLS connect, handshake, request/response loop
@@ -272,9 +329,13 @@ scripts/vmedia_probe_go/           bring-up driver: -type cd|fd|hd, -iso/-dev/-d
 
 **Done:** CD-ROM, floppy and HD/USB read+write paths (handshake, TUR, READ(10/12),
 WRITE(10/12), READ CAPACITY, MODE SENSE; CD adds the MMC probes) verified live with
-both a file backing and raw physical-volume passthrough (`-dev Y:`, elevated).
-**Next:** wire into the `kvm` command + browser read bridge (control plane) and add
-a windowed LRU cache.
+both a file backing and raw physical-volume passthrough (`-dev Y:`, elevated). The
+**browser control plane is wired**: the `kvm` command serves the vmedia panel
+(read-only local image files, cd/fd/hd in parallel) and bridges the BMC's SCSI reads
+to the browser on demand over `/control`; host writes use the server-side path.
+**Next:** a windowed LRU/read-ahead cache (bootloader/ISO9660 reads are largely
+sequential; collapsing many 128 KiB round-trips into larger aligned fetches would
+cut latency). Tracked in `TODO.md`.
 
 ## References
 

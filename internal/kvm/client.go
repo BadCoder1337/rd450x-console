@@ -34,6 +34,8 @@ type Client struct {
 
 	webHost   string // for releasing the web session on close
 	webCookie string
+	webToken  string            // STOKEN, reused for virtual-media auth
+	webArgs   map[string]string // parsed jnlp args (vmedia ports, vmsecure)
 
 	OnFrame FrameFunc // optional; invoked on each decoded frame
 }
@@ -54,14 +56,28 @@ func Connect(ctx context.Context, opts Options, password string) (*Client, error
 		opts.Port = 7582
 	}
 
-	sess, err := Login(ctx, opts.Host, opts.User, password)
+	// FetchLaunchArgs (rather than Login) so we keep the full jnlp arg map: the
+	// virtual-media path reuses this session's token and needs the per-device ports
+	// and vmsecure flag carried in the same response.
+	args, cookie, err := FetchLaunchArgs(ctx, opts.Host, opts.User, password)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("kvm: web session established (token %d bytes)", len(sess.Token))
+	token := args["kvmtoken"]
+	if token == "" {
+		Logout(opts.Host, cookie)
+		return nil, fmt.Errorf("launch jnlp: no -kvmtoken in response (parsed %d args)", len(args))
+	}
+	webcookie := args["webcookie"]
+	if webcookie == "" {
+		webcookie = cookie
+	}
+	sess := WebSession{Token: token, Cookie: webcookie}
+	log.Printf("kvm: web session established (token %d bytes)", len(token))
 
 	conn, err := dial(opts.Host, opts.Port, opts.TLS)
 	if err != nil {
+		Logout(opts.Host, webcookie)
 		return nil, fmt.Errorf("dial video port: %w", err)
 	}
 
@@ -70,7 +86,9 @@ func Connect(ctx context.Context, opts Options, password string) (*Client, error
 		r:         bufio.NewReaderSize(conn, 1<<16),
 		dec:       codec.New(),
 		webHost:   opts.Host,
-		webCookie: sess.Cookie,
+		webCookie: webcookie,
+		webToken:  token,
+		webArgs:   args,
 	}
 
 	// Bound the handshake: after the TCP/TLS dial, a BMC that stops responding
@@ -80,21 +98,25 @@ func Connect(ctx context.Context, opts Options, password string) (*Client, error
 	conn.SetDeadline(time.Now().Add(dialTimeout))
 	if err := c.handshake(sess, opts.User); err != nil {
 		conn.Close()
-		Logout(opts.Host, sess.Cookie)
+		Logout(opts.Host, webcookie)
 		return nil, err
 	}
 	conn.SetDeadline(time.Time{})
 
-	// The web session has done its only job: minting the kvmtoken and allocating
-	// the video session, which is now validated and resumed. Release it right away
-	// rather than holding it for the whole KVM session — that way the web session
-	// never outlives its usefulness, even if the process is later killed hard
-	// (bypassing Close()). The video stream is authenticated by the IVTP session,
-	// not the web cookie.
-	Logout(opts.Host, sess.Cookie)
-	c.webCookie = ""
-	log.Printf("kvm: web session released (KVM session is up)")
+	// Keep the web session alive. It minted the kvmtoken and allocated the video
+	// session, but virtual media reuses that same token to authenticate its IUSB
+	// redirection (internal/kvm/vmediactl.go), so we no longer release it after the
+	// handshake. The session is logged out when the KVM client closes (Close),
+	// tearing down video and virtual media together.
+	log.Printf("kvm: web session retained for virtual-media reuse")
 	return c, nil
+}
+
+// VMediaSession returns the live web-session token and the parsed jnlp arg map
+// (per-device vmedia ports, vmsecure). The virtual-media path uses these to open an
+// IUSB redirection by reusing this KVM session instead of opening a new web login.
+func (c *Client) VMediaSession() (token string, args map[string]string) {
+	return c.webToken, c.webArgs
 }
 
 func (c *Client) handshake(sess WebSession, user string) error {

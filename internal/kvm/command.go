@@ -54,15 +54,22 @@ func RunCommand(ctx context.Context, args []string) error {
 	creds := config.Load(*host, *user)
 
 	var (
-		src     rfb.Source
-		sink    rfb.Sink
-		control webui.ControlHandler
+		src       rfb.Source
+		sink      rfb.Sink
+		control   webui.ControlHandler
+		vmediaCtl webui.VMediaController
 	)
 
 	if creds.Host != "" && creds.User != "" && creds.Password != "" {
 		// Power control rides standard IPMI chassis control over RMCP+ (UDP 623),
 		// independent of the KVM video port.
 		control = powerControl{power.New(creds.Host, config.PortOr(623), creds.User, creds.Password)}
+		// Virtual media opens an AMI IUSB redirection per attach, backed by bytes
+		// the browser streams on demand (File.slice / WebUSB). It reuses the KVM
+		// client's web session for auth, so the live client is published to it once
+		// connected (below).
+		vmCtl := newVMediaControl(creds.Host)
+		vmediaCtl = vmCtl
 		// Real BMC: a dynamic FrameSource fed by decoded video, and a HID Sink
 		// driving keyboard/mouse. Both are created up front so the BMC client's
 		// OnFrame and the sink are wired before Run starts.
@@ -76,25 +83,27 @@ func RunCommand(ctx context.Context, args []string) error {
 		sink = late
 		go connectBMC(ctx, Options{
 			Host: creds.Host, Port: *port, TLS: *useTLS, User: creds.User,
-		}, creds.Password, fsrc, late)
+		}, creds.Password, fsrc, late, vmCtl)
 	} else {
 		log.Printf("kvm: IPMI_USER/IPMI_PASSWORD not set — serving test pattern only")
 		src = rfb.NewTestPattern(ctx, 1024, 768)
 		sink = rfb.NopSink()
 	}
 
-	return webui.Serve(ctx, *listen, src, sink, !*noBrowser, cancel, control)
+	return webui.Serve(ctx, *listen, src, sink, !*noBrowser, cancel, control, vmediaCtl)
 }
 
 // connectBMC establishes the BMC session, wires decoded frames into fsrc and
-// builds the HID sink, publishing it through late for the RFB server.
-func connectBMC(ctx context.Context, opts Options, password string, fsrc *rfb.FrameSource, late *lateSink) {
+// builds the HID sink, publishing it through late for the RFB server. It also
+// publishes the live client to vmCtl so virtual media can reuse the web session.
+func connectBMC(ctx context.Context, opts Options, password string, fsrc *rfb.FrameSource, late *lateSink, vmCtl *vmediaControl) {
 	c, err := Connect(ctx, opts, password)
 	if err != nil {
 		log.Printf("kvm: BMC connect failed: %v", err)
 		return
 	}
 	log.Printf("kvm: connected to BMC %s:%d, streaming video fragments", opts.Host, opts.Port)
+	vmCtl.setClient(c)
 
 	hid := NewSink(ctx, c, 1024, 768)
 	c.OnFrame = func(f *codec.Frame) {

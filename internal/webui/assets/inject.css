@@ -12,15 +12,51 @@
   box-sizing: content-box;
 }
 
-/* Uniform width for the action buttons inside our panels. */
+/* Power and Virtual Media share one look: uniform-width controls stacked one per
+   line. The button width matches noVNC's native panel buttons. */
 #rd450x_power input[type=button],
 #rd450x_vmedia input[type=button] {
   min-width: 170px;
 }
 
-#rd450x_vmedia_file,
-#rd450x_vmedia_kind {
+/* The kind <select> isn't an <input type=button>, so noVNC's button styling doesn't
+   reach it — make it a block control the same width as the buttons below it. */
+#rd450x_vmedia select {
+  display: block;
+  min-width: 170px;
+  margin: 2px auto;
+}
+
+/* Transient one-line message (pick / I/O errors) — collapses to nothing when empty
+   so it reserves no space until there's something to say. */
+.rd450x_msg {
+  font-size: 12px;
+  color: #b35a00;
   max-width: 220px;
+  word-break: break-word;
+}
+.rd450x_msg:empty {
+  display: none;
+}
+
+/* Per-device status list — each row reuses the .rd450x_status read-out from the
+   power panel, so the two panels look identical. */
+.rd450x_devlist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rd450x_devtag {
+  flex: 0 0 28px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Disabled controls (features the browser/OS can't support) read as muted; the
+ * tooltip explains why. */
+#rd450x_vmedia input[type=button]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* A small status read-out: a coloured state dot + label. */
@@ -46,6 +82,7 @@
   background: #9e9e9e; /* unknown */
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
 }
+/* Power states. */
 .rd450x_status[data-state="on"] .rd450x_dot {
   background: #43a047;
 }
@@ -54,4 +91,18 @@
 }
 .rd450x_status[data-state="pending"] .rd450x_dot {
   background: #e0a000;
+}
+
+/* Virtual-media device states (same dot, mapped to mount lifecycle). */
+.rd450x_status[data-state="idle"] .rd450x_dot {
+  background: #9e9e9e;
+}
+.rd450x_status[data-state="mounting"] .rd450x_dot {
+  background: #e0a000;
+}
+.rd450x_status[data-state="mounted"] .rd450x_dot {
+  background: #43a047;
+}
+.rd450x_status[data-state="error"] .rd450x_dot {
+  background: #cc3333;
 }

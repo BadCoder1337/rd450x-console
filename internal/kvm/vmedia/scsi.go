@@ -34,6 +34,13 @@ const (
 	scsiWrite12        = 0xAA
 )
 
+// amiControlOpcodeMin is the low end of AMI's redirection-control opcode range
+// (0xF0–0xFF). These ride in the SCSI opcode slot (payload[9]) but are NOT SCSI
+// commands — e.g. 0xF1 ack, 0xF2 auth, 0xF3 (a periodic poll the BMC emits),
+// 0xF4 SET_HARDDISK_TYPE, 0xF6 kill. JViewer routes every opcode through its native
+// SCSI handler, which simply acks these; we match that with an empty echo-envelope.
+const amiControlOpcodeMin = 0xF0
+
 // Device emulates a read-only USB mass-storage device backed by a Reader,
 // answering the BMC's IUSB-wrapped SCSI commands. It covers both profiles:
 //   - CD-ROM: 2048-byte blocks, MMC command set (READ TOC / GET CONFIGURATION /
@@ -155,6 +162,14 @@ func (c *Device) Handle(req *Packet) ([]byte, error) {
 		return c.buildResponse(req, nil), nil
 
 	default:
+		// AMI redirection-control opcodes (0xF0–0xFF) are not SCSI; they only need an
+		// ack (empty echo-envelope), exactly as JViewer's native handler gives them —
+		// no warning. (0xF1 ack/0xF2 auth are consumed in the handshake; 0xF6 kill is
+		// caught by the session loop before Handle.) Below 0xF0 is a genuinely
+		// unimplemented SCSI command, which is worth logging.
+		if cdb[0] >= amiControlOpcodeMin {
+			return c.buildResponse(req, nil), nil
+		}
 		log.Printf("vmedia: unhandled SCSI opcode 0x%02X (replying empty)", cdb[0])
 		return c.buildResponse(req, nil), nil
 	}

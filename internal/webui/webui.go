@@ -35,15 +35,18 @@ var novncFiles embed.FS
 
 // assetFiles holds our own toolbar extension (power + virtual-media UI) injected
 // into the otherwise-pristine noVNC page at serve time. Kept outside the novnc
-// submodule so it stays untouched and updatable.
+// submodule so it stays untouched and updatable. The toolbar is split into ES
+// modules under assets/js (entry: js/main.js); go:embed pulls the whole subtree.
 //
-//go:embed assets/inject.js assets/inject.css
+//go:embed assets/inject.css assets/js
 var assetFiles embed.FS
 
 // injectSnippet is spliced in just before </body> of noVNC's vnc.html. It pulls
-// in our stylesheet and toolbar script without modifying the embedded submodule.
+// in our stylesheet and toolbar entry module without modifying the embedded
+// submodule. The entry is loaded as a native ES module (which defers by default,
+// so no `defer` attribute), letting it `import` the rest of the toolbar code.
 const injectSnippet = `<link rel="stylesheet" href="rd450x/inject.css">` +
-	`<script defer src="rd450x/inject.js"></script>` + "\n</body>"
+	`<script type="module" src="rd450x/js/main.js"></script>` + "\n</body>"
 
 // Serve starts the web server on listen, serving noVNC and a /websockify RFB
 // endpoint backed by src/sink. It blocks until ctx is cancelled.
@@ -53,9 +56,10 @@ const injectSnippet = `<link rel="stylesheet" href="rd450x/inject.css">` +
 // whole bridge down — cancelling ctx so the BMC client closes and releases its
 // web session — instead of leaving an orphaned video/web session on the card.
 //
-// control, if non-nil, backs the /control WebSocket (power and virtual-media
-// actions from the injected toolbar). A nil control disables those actions.
-func Serve(ctx context.Context, listen string, src rfb.Source, sink rfb.Sink, openBrowser bool, onDisconnect func(), control ControlHandler) error {
+// control, if non-nil, backs the power actions on the /control WebSocket; vmedia,
+// if non-nil, backs virtual-media attach/detach on the same socket. A nil handler
+// disables its respective actions (e.g. the test-pattern mode with no credentials).
+func Serve(ctx context.Context, listen string, src rfb.Source, sink rfb.Sink, openBrowser bool, onDisconnect func(), control ControlHandler, vmedia VMediaController) error {
 	sub, err := fs.Sub(novncFiles, "novnc")
 	if err != nil {
 		return err
@@ -89,7 +93,10 @@ func Serve(ctx context.Context, listen string, src rfb.Source, sink rfb.Sink, op
 			return
 		}
 		defer c.CloseNow()
-		serveControl(r.Context(), c, control)
+		// Virtual-media read responses carry up to the IUSB 128 KiB max transfer, well
+		// over coder/websocket's 32 KiB default read limit — raise it or those frames fail.
+		c.SetReadLimit(maxControlFrame)
+		serveControl(r.Context(), c, control, vmedia)
 	})
 	mux.HandleFunc("/websockify", func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
