@@ -4,7 +4,13 @@
 // mounted in PARALLEL: each runs its own backing keyed by its device byte
 // (control-socket.js routes binary sector requests by that byte).
 
-import { mkButton, mkPanel, mkHeading, mkActionButton, fmtSize } from "./dom.js";
+import {
+  mkButton,
+  mkPanel,
+  mkHeading,
+  mkActionButton,
+  fmtSize,
+} from "./dom.js";
 import { register } from "./panel.js";
 import {
   send,
@@ -101,7 +107,11 @@ export function build(container, before) {
   // rows via getElementById, which only sees nodes once they're in the document.
   for (const k of KINDS) renderDevStatus(k.kind, "idle", "not mounted");
 
-  register({ panel: p.panel, btn, ids: ["rd450x_vmedia", "rd450x_vmedia_button"] });
+  register({
+    panel: p.panel,
+    btn,
+    ids: ["rd450x_vmedia", "rd450x_vmedia_button"],
+  });
 
   // JSON status replies, scoped to one kind. state ∈ mounted | unmounted | error.
   onMessage("vmedia.status", (m) => {
@@ -137,7 +147,7 @@ function labelOf(kind) {
 
 function setPending(backing) {
   pending = backing;
-  setMsg(`ready: ${backing.name} (${fmtSize(backing.size)}) — click Mount`);
+  setMsg(`ready to mount: ${backing.name} (${fmtSize(backing.size)})`);
 }
 
 // --- mount / unmount --------------------------------------------------------
@@ -149,7 +159,7 @@ function mountPending() {
   }
   const kind = kindSel.value;
   if (state[kind].mounted) {
-    setMsg(`${labelOf(kind)} already mounted — unmount it first`);
+    setMsg(`${labelOf(kind)} already mounted`);
     return;
   }
   const backing = pending;
@@ -195,7 +205,7 @@ function renderDevStatus(kind, dataState, label, name, size) {
   tag.textContent = KINDS.find((k) => k.kind === kind)?.tag ?? kind;
   el.appendChild(tag);
 
-  const text = name ? `${name} (${fmtSize(size)})` : label ?? "not mounted";
+  const text = name ? `${name} (${fmtSize(size)})` : (label ?? "not mounted");
   el.appendChild(document.createTextNode(text));
 }
 

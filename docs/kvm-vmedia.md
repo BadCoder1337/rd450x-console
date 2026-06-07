@@ -164,10 +164,15 @@ above. From the RE references:
   arbitrary `(offset, len ≤ 128 KiB)`.
 - Block size: **CD 2048 B**, **floppy/HD 512 B**. Access is **random** (boot jumps
   around), so the backing read must seek, not stream.
-- Optimisation: Go should fetch **larger aligned windows** (e.g. 512 KiB–1 MiB)
-  than the BMC's request and keep a small **LRU cache** — bootloader/ISO9660 reads
-  are largely sequential, so this collapses many round-trips. (`jsnbd` does none of
-  this; it's a clear place to do better.)
+- Optimisation: Go fetches **larger aligned windows** (512 KiB) than the BMC's
+  request and keeps a small **LRU cache** — bootloader/ISO9660 reads are largely
+  sequential, so this collapses many round-trips. (`jsnbd` does none of this; it's a
+  clear place we do better.) **Implemented** in `internal/kvm/vmedia/cache.go`
+  (`vmedia.Cache`), wired into the browser-backed path by `buildEmulator`
+  (`internal/kvm/vmediactl.go`): a miss fetches one 512 KiB window over `/control`
+  and serves later reads from memory; the LRU is bounded to 64 windows (32 MiB);
+  writes write through and invalidate the touched windows so read-after-write stays
+  coherent. The hit rate is logged on detach.
 - IUSB framing: 32-byte header + payload; header length field is little-endian, the
   SCSI CDB inside is big-endian. Min command set before READ(10): TEST UNIT READY,
   INQUIRY, READ CAPACITY, MODE SENSE; CD adds the MMC probes (READ TOC, GET
@@ -323,6 +328,7 @@ internal/kvm/vmedia/auth.go        web-token auth packet + ACK/connection-status
 internal/kvm/vmedia/session.go     plaintext/TLS connect, handshake, request/response loop
 internal/kvm/vmedia/scsi.go        CD-ROM (MMC) + Direct-Access (floppy/HD) SCSI emulation, read+write
 internal/kvm/vmedia/reader.go      Reader/ReadWriter + FileReader (localhost turbo path, RO/RW)
+internal/kvm/vmedia/cache.go       windowed LRU read cache (Cache): 512 KiB aligned fetches, 32 MiB cap, write-through+invalidate
 internal/kvm/vmedia/volume_windows.go  raw passthrough: volume (\\.\Y:, lock+dismount) & whole disk (\\.\PhysicalDriveN, offline)
 scripts/vmedia_probe_go/           bring-up driver: -type cd|fd|hd, -iso/-dev/-disk, -w, -duration (works)
 ```
@@ -332,10 +338,12 @@ WRITE(10/12), READ CAPACITY, MODE SENSE; CD adds the MMC probes) verified live w
 both a file backing and raw physical-volume passthrough (`-dev Y:`, elevated). The
 **browser control plane is wired**: the `kvm` command serves the vmedia panel
 (read-only local image files, cd/fd/hd in parallel) and bridges the BMC's SCSI reads
-to the browser on demand over `/control`; host writes use the server-side path.
-**Next:** a windowed LRU/read-ahead cache (bootloader/ISO9660 reads are largely
-sequential; collapsing many 128 KiB round-trips into larger aligned fetches would
-cut latency). Tracked in `TODO.md`.
+to the browser on demand over `/control`; host writes use the server-side path. A
+**windowed LRU/read-ahead cache** (`vmedia.Cache`, `internal/kvm/vmedia/cache.go`,
+wired in by `buildEmulator`) sits between the SCSI emulator and the browser backing:
+it coalesces the BMC's sequential ≤128 KiB reads into 512 KiB aligned fetches and
+serves later reads from a 32 MiB LRU instead of a `/control` round-trip (writes write
+through and invalidate touched windows). Hit rate is logged on detach.
 
 ## References
 

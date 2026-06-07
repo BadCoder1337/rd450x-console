@@ -63,7 +63,7 @@ func (v *vmediaControl) Attach(ctx context.Context, kind string, backing vmedia.
 		return nil, err
 	}
 
-	emu := buildEmulator(kind, backing, writable)
+	emu, cache := buildEmulator(kind, backing, writable)
 
 	mctx, mcancel := context.WithCancel(ctx)
 	go func() {
@@ -72,7 +72,7 @@ func (v *vmediaControl) Attach(ctx context.Context, kind string, backing vmedia.
 		}
 	}()
 
-	return &vmediaMount{cancel: mcancel, sess: sess}, nil
+	return &vmediaMount{cancel: mcancel, sess: sess, kind: kind, cache: cache}, nil
 }
 
 // vmediaPort maps a device kind to its BMC port, preferring the jnlp value and
@@ -97,16 +97,23 @@ func portOr(s string, def int) int {
 	return def
 }
 
-// buildEmulator picks the SCSI profile: CD-ROM is always read-only; floppy/HD/USB
-// are writable when the browser supplied a writable backing.
-func buildEmulator(kind string, backing vmedia.ReadWriter, writable bool) *vmedia.Device {
+// buildEmulator picks the SCSI profile and fronts the backing with a windowed LRU
+// read cache (one /control round-trip per backing read, so coalescing the BMC's
+// sequential ≤128 KiB reads into larger aligned fetches cuts latency). CD-ROM is
+// always read-only; floppy/HD/USB are writable when the browser supplied a writable
+// backing — the cache then writes through and invalidates touched windows. The cache
+// is returned so the mount can log its hit rate on detach.
+func buildEmulator(kind string, backing vmedia.ReadWriter, writable bool) (*vmedia.Device, *vmedia.Cache) {
 	switch {
 	case kind == "cd":
-		return vmedia.NewCDROM(backing)
+		cache := vmedia.NewCache(backing, nil)
+		return vmedia.NewCDROM(cache), cache
 	case writable:
-		return vmedia.NewDiskRW(backing)
+		cache := vmedia.NewCache(backing, backing)
+		return vmedia.NewDiskRW(cache), cache
 	default:
-		return vmedia.NewDisk(backing)
+		cache := vmedia.NewCache(backing, nil)
+		return vmedia.NewDisk(cache), cache
 	}
 }
 
@@ -115,6 +122,8 @@ func buildEmulator(kind string, backing vmedia.ReadWriter, writable bool) *vmedi
 type vmediaMount struct {
 	cancel context.CancelFunc
 	sess   *vmedia.Session
+	kind   string
+	cache  *vmedia.Cache
 	once   sync.Once
 }
 
@@ -122,6 +131,13 @@ func (m *vmediaMount) Close() error {
 	m.once.Do(func() {
 		m.cancel()
 		_ = m.sess.Close()
+		if m.cache != nil {
+			s := m.cache.Stats()
+			if total := s.Hits + s.Misses; total > 0 {
+				log.Printf("vmedia: %s cache — %d hits / %d misses (%.0f%%), %d KiB fetched from browser",
+					m.kind, s.Hits, s.Misses, 100*float64(s.Hits)/float64(total), s.FetchedBytes/1024)
+			}
+		}
 	})
 	return nil
 }

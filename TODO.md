@@ -35,10 +35,15 @@ tracks only what's still pending.
         `-dev Y:` for a single volume (lock+dismount) and `-disk Y:|N` for the WHOLE
         physical disk (`\\.\PhysicalDriveN`, taken offline; host sees the full GPT —
         groundwork for a WebUSB byte-source). Verified live read+write on a USB stick.
-      - [ ] **Wire the data plane into the `kvm` command + browser read bridge**
+      - [x] **Wire the data plane into the `kvm` command + browser read bridge**
         (control plane): map `vmedia.attach/detach` → a `vmedia.Session`, back the
         `Reader` with the browser `File.slice` protocol; re-enable the toolbar entry.
-      - [ ] Windowed LRU cache over the read protocol (collapse round-trips).
+      - [x] **Windowed LRU cache over the read protocol** (collapse round-trips):
+        `vmedia.Cache` (`internal/kvm/vmedia/cache.go`) fronts the browser backing in
+        `buildEmulator` — a miss fetches a 512 KiB aligned window (one `/control`
+        round-trip) and serves subsequent reads from memory, bounded to 32 MiB via a
+        64-window LRU; writes go through and invalidate touched windows. Hit rate is
+        logged on detach.
       _Source: `CLAUDE.md` target-system notes; RE from decompiled JViewer + live BMC._
 
 ## KVM — video fidelity

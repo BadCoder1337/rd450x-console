@@ -78,10 +78,12 @@ func kindToDev(kind string) byte {
 // that stays connected but stops answering.
 const browserOpTimeout = 30 * time.Second
 
-// maxControlFrame caps an inbound control frame. Read responses carry up to the
-// IUSB 128 KiB max transfer plus the small response header, so the WS read limit
-// must be raised well above coder/websocket's 32 KiB default or those frames fail.
-const maxControlFrame = 0x20000 + 4096
+// maxControlFrame caps an inbound control frame. The vmedia read cache fetches a
+// whole aligned window (vmedia.WindowSize) from the browser in ONE round-trip, so a
+// read response frame can be that large — well above coder/websocket's 32 KiB
+// default read limit. Size the limit to the window plus the small response header,
+// or those frames silently fail and the host sees "no medium".
+const maxControlFrame = vmedia.WindowSize + 4096
 
 // ctrlMsg is a JSON control command from the browser. Virtual-media sector data is
 // binary and handled separately (see docs/kvm-vmedia.md); this struct covers the
