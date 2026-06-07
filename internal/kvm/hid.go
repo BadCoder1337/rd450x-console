@@ -165,7 +165,22 @@ func (s *HIDSink) SetFrameSize(w, h int) {
 // usage code, updates held state, and sends the resulting 8-byte report.
 func (s *HIDSink) KeyEvent(keysym uint32, down bool) {
 	s.mu.Lock()
-	if bit := modBitFor(keysym); bit != 0 {
+	if usage, ok := usbUsageFromKeysym(keysym); ok {
+		// Scancode pass-through (international layouts): the keysym carries a raw
+		// USB usage. Route modifier usages to the byte0 bitmask and everything
+		// else to a key slot, exactly as the US-layout path below does.
+		if bit := modBitForUsage(usage); bit != 0 {
+			if down {
+				s.mods |= bit
+			} else {
+				s.mods &^= bit
+			}
+		} else if down {
+			s.addKey(usage)
+		} else {
+			s.removeKey(usage)
+		}
+	} else if bit := modBitFor(keysym); bit != 0 {
 		if down {
 			s.mods |= bit
 		} else {

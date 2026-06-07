@@ -131,3 +131,48 @@ func usageFor(keysym uint32) byte { return usbUsage[keysym] }
 // modBitFor returns the USB modifier bit for a modifier keysym, or 0 if the
 // keysym is not a modifier.
 func modBitFor(keysym uint32) byte { return modifierKeysym[keysym] }
+
+// scancodePassthroughBase tags a keysym that carries a raw USB HID usage code in
+// its low byte rather than a character. It backs the client-side "scancode
+// pass-through" keyboard mode used for international layouts: the frontend
+// (internal/webui/assets/js/keyboard.js) maps each physical KeyboardEvent.code
+// to its layout-independent USB usage and sends (scancodePassthroughBase |
+// usage), so the *guest's* own keymap — not our US-only table — turns the
+// physical key into a character. The base sits far above every real X11 keysym
+// (Unicode keysyms top out near 0x0110FFFF, vendor keysyms near 0x1008FFFF), so
+// it can never collide with a genuine keysym noVNC would send.
+const scancodePassthroughBase = 0xF000_0000
+
+// usbUsageFromKeysym decodes a scancode-pass-through keysym into its raw USB HID
+// usage code. ok is false for ordinary keysyms, which take the US-layout path.
+func usbUsageFromKeysym(keysym uint32) (usage byte, ok bool) {
+	if keysym&0xFFFF_FF00 == scancodePassthroughBase {
+		return byte(keysym & 0xFF), true
+	}
+	return 0, false
+}
+
+// modBitForUsage maps a USB HID modifier usage (0xE0..0xE7, per the USB HID
+// Usage Tables) to its modifier bit, or 0 for a non-modifier usage. Used to
+// route pass-through usages into byte0 instead of a key slot.
+func modBitForUsage(usage byte) byte {
+	switch usage {
+	case 0xE0:
+		return modLeftCtrl
+	case 0xE1:
+		return modLeftShift
+	case 0xE2:
+		return modLeftAlt
+	case 0xE3:
+		return modLeftGUI
+	case 0xE4:
+		return modRightCtrl
+	case 0xE5:
+		return modRightShift
+	case 0xE6:
+		return modRightAlt
+	case 0xE7:
+		return modRightGUI
+	}
+	return 0
+}

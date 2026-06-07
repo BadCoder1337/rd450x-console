@@ -2,21 +2,24 @@
 //
 // Loaded into an otherwise-pristine noVNC page via
 // <script type="module" src="rd450x/js/main.js"> (injected by webui.go before
-// </body>). It builds two control-bar entries that follow noVNC's own UI
-// conventions, driven over the out-of-band /control WebSocket → IPMI:
+// </body>). It builds three control-bar entries that follow noVNC's own UI
+// conventions:
 //
 //   Power:         full chassis control (On / ACPI / Off / Reset / Cycle).
 //   Virtual Media: pick local images / WebUSB devices and mount them on the host;
 //                  cd/fd/hd can be mounted in parallel, each served on demand
 //                  (File.slice / WebUSB — never uploaded in full).
+//   Keyboard:      toggle physical-key (scancode) pass-through for international
+//                  layouts — patches noVNC's key path locally, no server traffic.
 //
-// All control traffic goes to /control, never to the RFB video socket, so a control
-// command can't stall the framebuffer.
+// Power and Virtual Media ride the out-of-band /control WebSocket, never the RFB
+// video socket, so a control command can't stall the framebuffer.
 
 import { installOutsideClose } from "./panel.js";
 import { connect } from "./control-socket.js";
 import * as power from "./power.js";
 import * as vmedia from "./vmedia.js";
+import * as keyboard from "./keyboard.js";
 
 function init() {
   const bar = document.getElementById("noVNC_control_bar");
@@ -29,6 +32,7 @@ function init() {
 
   power.build(container, before);
   vmedia.build(container, before);
+  keyboard.build(container, before);
 
   installOutsideClose();
   connect();

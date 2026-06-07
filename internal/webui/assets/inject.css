@@ -59,6 +59,22 @@
   cursor: not-allowed;
 }
 
+/* Keyboard panel: the layout toggle row and its explanatory hint. */
+.rd450x_kbd_row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  max-width: 220px;
+  cursor: pointer;
+}
+.rd450x_kbd_hint {
+  font-size: 12px;
+  color: #555;
+  max-width: 220px;
+  margin-top: 6px;
+}
+
 /* A small status read-out: a coloured state dot + label. */
 .rd450x_status {
   display: flex;

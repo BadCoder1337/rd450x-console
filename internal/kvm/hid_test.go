@@ -64,6 +64,69 @@ func TestModBitFor(t *testing.T) {
 	}
 }
 
+func TestUsbUsageFromKeysym(t *testing.T) {
+	cases := []struct {
+		name   string
+		keysym uint32
+		want   byte
+		wantOK bool
+	}{
+		{"passthrough a-position", scancodePassthroughBase | 0x04, 0x04, true},
+		{"passthrough IntlBackslash", scancodePassthroughBase | 0x64, 0x64, true},
+		{"passthrough left-ctrl usage", scancodePassthroughBase | 0xE0, 0xE0, true},
+		{"ordinary ascii keysym", 'a', 0x00, false},
+		{"ordinary special keysym", 0xff0d, 0x00, false},
+		{"unicode keysym not misread", 0x01000400, 0x00, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := usbUsageFromKeysym(c.keysym)
+			if got != c.want || ok != c.wantOK {
+				t.Errorf("usbUsageFromKeysym(%#x) = (%#x,%v), want (%#x,%v)",
+					c.keysym, got, ok, c.want, c.wantOK)
+			}
+		})
+	}
+}
+
+// TestScancodePassthrough drives the sink with pass-through keysyms (raw USB
+// usages carried in the keysym low byte) and checks that regular keys land in a
+// key slot while modifier usages set byte0 — independent of the US keysym table.
+func TestScancodePassthrough(t *testing.T) {
+	s := &HIDSink{pressed: make([]byte, 0, 6)}
+
+	// A physical-Y-position key (USB usage 0x1c) — on a German layout this is the
+	// 'z' key; the guest's keymap, not ours, decides the character.
+	rep := s.KeyEventBuild(scancodePassthroughBase|0x1c, true)
+	usb := usbFromReport(rep)
+	if usb[0] != 0 {
+		t.Errorf("modifier byte = %#x, want 0", usb[0])
+	}
+	if usb[2] != 0x1c {
+		t.Errorf("key0 = %#x, want 0x1c", usb[2])
+	}
+
+	// A pass-through modifier usage (Right Alt / AltGr, 0xE6) must hit the bitmask.
+	rep = s.KeyEventBuild(scancodePassthroughBase|0xE6, true)
+	usb = usbFromReport(rep)
+	if usb[0] != modRightAlt {
+		t.Errorf("after AltGr down: modifier byte = %#x, want %#x", usb[0], modRightAlt)
+	}
+	if usb[2] != 0x1c {
+		t.Errorf("held key dropped: key0 = %#x, want 0x1c", usb[2])
+	}
+
+	// Release the key; the slot clears, the modifier stays held.
+	rep = s.KeyEventBuild(scancodePassthroughBase|0x1c, false)
+	usb = usbFromReport(rep)
+	if usb[2] != 0 {
+		t.Errorf("after key up: key0 = %#x, want 0", usb[2])
+	}
+	if usb[0] != modRightAlt {
+		t.Errorf("after key up: modifier byte = %#x, want %#x", usb[0], modRightAlt)
+	}
+}
+
 // TestModifierBitmask drives the sink through a Ctrl+Alt+Del-style sequence and
 // checks byte0 of the resulting USB reports.
 func TestModifierBitmask(t *testing.T) {
@@ -100,7 +163,19 @@ func TestModifierBitmask(t *testing.T) {
 func (s *HIDSink) KeyEventBuild(keysym uint32, down bool) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if bit := modBitFor(keysym); bit != 0 {
+	if usage, ok := usbUsageFromKeysym(keysym); ok {
+		if bit := modBitForUsage(usage); bit != 0 {
+			if down {
+				s.mods |= bit
+			} else {
+				s.mods &^= bit
+			}
+		} else if down {
+			s.addKey(usage)
+		} else {
+			s.removeKey(usage)
+		}
+	} else if bit := modBitFor(keysym); bit != 0 {
 		if down {
 			s.mods |= bit
 		} else {

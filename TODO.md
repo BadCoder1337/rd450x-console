@@ -60,11 +60,18 @@ tracks only what's still pending.
 - [ ] **KM (keyboard/mouse) encryption** — implement KMCrypt RC4 wrapping when
       the BMC enables KM encryption (HID report sizes grow to 49).
       _Source: `internal/kvm/hid.go:44`._
-- [ ] **International keyboard layouts (client-side).** The HID keysym→USB map is
-      US-layout only; non-ASCII (e.g. Cyrillic) is dropped on paste. Cyrillic
-      *input* now works on the RD450X host via its console keymap (Alt+Shift
-      toggle, `us,ru`), but the bridge itself still only emits US scancodes.
-      _Source: `internal/kvm/usbhid.go`; 2026-06-06 session._
+- [x] **International keyboard layouts (client-side).** Implemented as physical-key
+      (scancode) pass-through: the frontend (`internal/webui/assets/js/keyboard.js`)
+      maps each `KeyboardEvent.code` (layout-independent physical position) to its USB
+      HID usage and ships it as a private "pass-through" keysym
+      (`scancodePassthroughBase`, `internal/kvm/usbhid.go`); the sink decodes it
+      straight to a usage so the **guest's** own keymap turns the key into a
+      character — every layout works as long as the guest is set to it (e.g. the
+      RD450X host's `us,ru` + Alt+Shift). Modifiers and unmapped keys fall through to
+      noVNC's normal keysym path, so shortcuts/AltGr/paste are unaffected. Toggled
+      (default on) from a Keyboard toolbar panel; patches noVNC's `_handleKeyEvent`
+      locally with no extra server traffic. _Source: `internal/kvm/usbhid.go`,
+      `internal/kvm/hid.go`, `internal/webui/assets/js/keyboard.js`._
 - [ ] **Dispatch inbound control messages** (power status, keyboard-LED state,
       encryption negotiation) in the read loop instead of discarding them.
       _Source: `internal/kvm/client.go:207`._
