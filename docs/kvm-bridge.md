@@ -51,9 +51,9 @@ internal/webui/novnc/    noVNC v1.5.0 — git submodule (novnc/noVNC), embedded 
 internal/sol/
   sol.go                 `sol` subcommand wiring + flags + --info
   console.go             RMCP+ SOL session loop, seq/ack, escape menu, render goroutine
-  terminal.go            terminal abstraction (raw mode, sizing)
-  terminal_tcell.go      tcell + vt10x screen/emulator backend
-  keyencode.go           key event → VT/ANSI byte encoding
+  terminal.go            terminal abstraction (read/write/close)
+  terminal_pipe.go       raw-passthrough backend (host terminal in raw mode)
+  terminal_pipe_windows.go / _other.go   enable VT output (Windows) / no-op (Unix)
 ```
 
 ## Status
@@ -65,8 +65,8 @@ internal/sol/
   server and rendered by the embedded noVNC; RFB key/pointer events mapped to
   IVTP HID packets (type 1); clipboard paste as keystrokes.
 - **SOL:** ported to Go (`github.com/bougou/go-ipmi`) — `rd450x-console sol`
-  with the Ctrl-] escape menu, serial break, `--force`/`--info`, and a
-  tcell + vt10x terminal. The binary is self-contained.
+  with the Ctrl-] escape menu, serial break, `--force`/`--info`, and a raw
+  ipmitool-style terminal passthrough. The binary is self-contained.
 
 Remaining JViewer-parity items (power control, virtual media, mouse-mode
 negotiation, KM encryption, international layouts, video-fidelity validation) are

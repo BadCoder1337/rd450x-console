@@ -1,9 +1,10 @@
 // Package sol provides the Serial-over-LAN console mode of the unified binary.
 //
 // SOL runs over standard IPMI 2.0 RMCP+ (UDP 623) using github.com/bougou/go-ipmi
-// for the session and payload transport, with an interactive layer on top: a raw
-// terminal (alternate screen, VT, incremental UTF-8), a decoupled render
-// goroutine, and a telnet-style Ctrl-] escape menu (quit / serial break / help).
+// for the session and payload transport, with an interactive layer on top: the
+// host terminal in raw mode with the serial stream passed straight through
+// (ipmitool style), a decoupled render goroutine, and a telnet-style Ctrl-]
+// escape menu (quit / serial break / help).
 package sol
 
 import (

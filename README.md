@@ -107,12 +107,13 @@ rd450x-console sol --host 192.168.1.90 --user albert --escape "Ctrl-]"
 | `Ctrl-]` `?` | Show help |
 
 All other keystrokes — including `Ctrl-C` — are forwarded to the remote server.
-Input is decoded by a single cross-platform [tcell](https://github.com/gdamore/tcell)
-layer (identical on Windows, macOS and Linux): arrow keys, Home/End, Page Up/Down,
-Insert/Delete and F1–F12 are sent as VT/xterm escape sequences, and control keys
-(including the attention key) as their raw bytes. The BMC's VT/ANSI output is
-rendered through a `vt10x` terminal emulator, so full-screen TUIs like BIOS Setup
-display correctly.
+The console puts your terminal into raw mode and passes bytes straight through
+(the `ipmitool` model): your terminal emulator encodes arrow keys, Home/End, Page
+Up/Down, Insert/Delete and F1–F12 as the VT/xterm escape sequences it already
+uses, and renders the BMC's VT/ANSI output itself — so full-screen TUIs like BIOS
+Setup display correctly. This works in any modern terminal: xterm and friends on
+Linux/macOS, and Windows Terminal or `cmd`/conhost on Windows 10/11 (VT is enabled
+on both the input and output handles).
 
 ### Video console (`kvm`)
 
@@ -171,8 +172,8 @@ proprietary JViewer-SOC path is unnecessary):
 ```
 cmd/rd450x-console/   main entry point + mode dispatch (sol | kvm)
 internal/config/      runtime .env / env-var credential loading (password never printed)
-internal/sol/         SOL session, console event loop, escape handling, raw terminal
-                      (tcell + vt10x emulator; decoupled receive/render/input)
+internal/sol/         SOL session, console event loop, escape handling, raw
+                      terminal (ipmitool-style passthrough; decoupled receive/render/input)
 internal/kvm/         KVM client: IVTP transport, web-token auth, HID input
   codec/              ASPEED VQ + JPEG (DCT) + RC4 video decoder
 internal/rfb/         minimal RFB 3.8 server bridging decoded frames to noVNC

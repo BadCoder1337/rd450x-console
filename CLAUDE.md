@@ -68,7 +68,8 @@ the password. Reference the variables by name only.
 cmd/rd450x-console/   entry point + mode dispatch (sol | kvm)
 internal/config/      .env / env-var credential loading (password never printed)
 internal/sol/         RMCP+ SOL session loop, seq/ack, Ctrl-] escape menu,
-                      decoupled receive/render/input, tcell + vt10x terminal
+                      decoupled receive/render/input, raw ipmitool-style
+                      terminal passthrough (host terminal in raw mode)
 internal/kvm/         IVTP transport (TLS 7582), web-token auth, frame read loop,
                       USB HID keyboard/mouse input
 internal/kvm/codec/   ASPEED VQ + JPEG (DCT) + RC4 video decoder (clean-room)

@@ -1,7 +1,6 @@
 package sol
 
 import (
-	"bytes"
 	"sync"
 	"testing"
 	"time"
@@ -96,29 +95,6 @@ func TestParseEscape(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("parseEscape(%q) = %#x, want %#x", c.in, got, c.want)
-		}
-	}
-}
-
-func TestCompleteUTF8(t *testing.T) {
-	// "é" is 0xC3 0xA9; "│" (box-drawing) is 0xE2 0x94 0x82.
-	cases := []struct {
-		name       string
-		in         []byte
-		head, tail []byte
-	}{
-		{"ascii", []byte("hello"), []byte("hello"), nil},
-		{"complete-2byte", []byte{'a', 0xC3, 0xA9}, []byte{'a', 0xC3, 0xA9}, nil},
-		{"split-2byte", []byte{'a', 0xC3}, []byte{'a'}, []byte{0xC3}},
-		{"split-3byte-1", []byte{0xE2}, nil, []byte{0xE2}},
-		{"split-3byte-2", []byte{0xE2, 0x94}, nil, []byte{0xE2, 0x94}},
-		{"complete-3byte", []byte{0xE2, 0x94, 0x82}, []byte{0xE2, 0x94, 0x82}, nil},
-		{"empty", nil, nil, nil},
-	}
-	for _, c := range cases {
-		head, tail := completeUTF8(c.in)
-		if !bytes.Equal(head, c.head) || !bytes.Equal(tail, c.tail) {
-			t.Errorf("%s: completeUTF8(%v) = (%v,%v), want (%v,%v)", c.name, c.in, head, tail, c.head, c.tail)
 		}
 	}
 }
