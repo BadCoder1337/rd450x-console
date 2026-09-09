@@ -38,6 +38,25 @@ tracks only what's still pending.
       - [x] **Wire the data plane into the `kvm` command + browser read bridge**
         (control plane): map `vmedia.attach/detach` → a `vmedia.Session`, back the
         `Reader` with the browser `File.slice` protocol; re-enable the toolbar entry.
+      - [x] **ASUS single-port transport**: route each device over a fresh
+        MegaRAC tunnel on the BMC's web port using JViewer's `CDMEDIA` / `FDMEDIA`
+        / `HDMEDIA` service names, then run the normal IUSB auth/SCSI plane over
+        the upgraded stream. Unit-tested from the byte-exact decompiled handshake
+        and live-tested with a browser-backed ISO that Linux enumerated and read
+        on the ESC8000 G3 (BMC firmware 1.14.51); a 32 MiB random image read
+        back with a matching SHA-256 over the plaintext port-80 tunnel.
+      - [ ] **TLS-path detach leaves the BMC media daemon stuck** (ESC8000 G3
+        1.14.51, observed 2026-09-08): after detaching a CD mounted through the
+        `openssl`/443 tunnel the BMC kept its whole virtual USB tree attached to
+        the host and stopped answering new IVTP sessions on both ports; the
+        plaintext path releases within seconds. Compare against JViewer's exact
+        close sequence (does it send anything before `VmediaSockclose`? does it
+        wait for the BMC's FIN?) and find out whether a BMC cold reset is really
+        the only recovery. _Source: `docs/kvm-vmedia.md`._
+      - [ ] **Windows: `openssl` pipes have no deadlines.** The handshake
+        deadline on the TLS path now falls back to a timer that tears the child
+        down (`transport_openssl.go`), but this fallback has only been exercised
+        by unit tests, not on a real Windows host. _Source: `transport_openssl.go`._
       - [x] **Windowed LRU cache over the read protocol** (collapse round-trips):
         `vmedia.Cache` (`internal/kvm/vmedia/cache.go`) fronts the browser backing in
         `buildEmulator` — a miss fetches a 512 KiB aligned window (one `/control`
@@ -55,11 +74,13 @@ tracks only what's still pending.
 
 ## KVM — input
 
-- [ ] **Mouse-mode negotiation** (absolute vs relative). Currently fixed to
-      absolute; negotiate with the BMC like JViewer does. _Source: memory._
-- [ ] **KM (keyboard/mouse) encryption** — implement KMCrypt RC4 wrapping when
-      the BMC enables KM encryption (HID report sizes grow to 49).
-      _Source: `internal/kvm/hid.go:44`._
+- [~] **Mouse-mode negotiation** (absolute vs relative). The inbound mode is now
+      decoded/logged (the live ASUS reports mode 2, absolute), but the HID sink
+      still emits only absolute reports. Add relative/other report generation for
+      BMCs that advertise modes 1/3. _Source: decompiled JViewer + live ASUS._
+- [x] **KM (keyboard/mouse) encryption** — opcode 14/15 negotiation and JViewer's
+      actual `KMCrypt` format: Blowfish/ECB/NoPadding over the zero-padded USB HID
+      report, keyed by the KVM token, with IVTP status `0xFF`.
 - [x] **International keyboard layouts (client-side).** Implemented as physical-key
       (scancode) pass-through: the frontend (`internal/webui/assets/js/keyboard.js`)
       maps each `KeyboardEvent.code` (layout-independent physical position) to its USB
@@ -72,6 +93,7 @@ tracks only what's still pending.
       (default on) from a Keyboard toolbar panel; patches noVNC's `_handleKeyEvent`
       locally with no extra server traffic. _Source: `internal/kvm/usbhid.go`,
       `internal/kvm/hid.go`, `internal/webui/assets/js/keyboard.js`._
-- [ ] **Dispatch inbound control messages** (power status, keyboard-LED state,
-      encryption negotiation) in the read loop instead of discarding them.
-      _Source: `internal/kvm/client.go:207`._
+- [~] **Dispatch inbound control messages.** Encryption status and mouse mode are
+      handled; toolbar power status/actions use the independent standard-IPMI
+      controller. Keyboard-LED state and remaining JViewer sharing/media messages
+      are still discarded. _Source: `internal/kvm/client.go`._

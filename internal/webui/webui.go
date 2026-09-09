@@ -80,8 +80,16 @@ func Serve(ctx context.Context, listen string, src rfb.Source, sink rfb.Sink, op
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	// Our toolbar extension assets, and the injected variant of vnc.html.
-	mux.Handle("/rd450x/", http.StripPrefix("/rd450x/", http.FileServer(http.FS(assets))))
+	assetHandler := http.StripPrefix("/rd450x/", http.FileServer(http.FS(assets)))
+	mux.Handle("/rd450x/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// These embedded ES modules evolve together with the Go control protocol.
+		// Never let a page reload combine a newly rebuilt server with cached JS that
+		// still decodes the previous binary-frame layout.
+		w.Header().Set("Cache-Control", "no-store")
+		assetHandler.ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("/vnc.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		serveInjectedVNC(w, r, sub)
 	})
 	// Out-of-band control plane (power / virtual media), separate from the RFB

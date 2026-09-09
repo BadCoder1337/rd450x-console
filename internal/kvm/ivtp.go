@@ -23,6 +23,8 @@ const (
 	opSetCompression     uint16 = 7
 	opStopSession        uint16 = 8
 	opBlankScreen        uint16 = 9
+	opGetMouseMode       uint16 = 10
+	opGetFullScreen      uint16 = 11
 	opEnableEncryption   uint16 = 12
 	opDisableEncryption  uint16 = 13
 	opEncryptionStatus   uint16 = 14
@@ -30,6 +32,7 @@ const (
 	opValidateVideo      uint16 = 18
 	opValidateVideoResp  uint16 = 19
 	opGetKeybdLED        uint16 = 20
+	opWebSessionToken    uint16 = 21
 	opSessionAccepted    uint16 = 23
 	opMediaState         uint16 = 24
 	opVideoFragment      uint16 = 25
@@ -41,8 +44,16 @@ const (
 	opConnectionComplete uint16 = 58
 )
 
-// VideoPacketSize is the fixed body length of a VALIDATE_VIDEO_SESSION packet.
-const VideoPacketSize = 373
+// LegacyVideoPacketSize is the complete (header included) size of the
+// VALIDATE_VIDEO_SESSION packet emitted by the MegaRAC JViewer bundled with
+// the ASUS ESC8000 G3. Unlike normal IVTP packets, this value is also written
+// into the packet's Size field.
+const LegacyVideoPacketSize = 332
+
+// ModernVideoPacketBodySize is used by newer dedicated-port MegaRAC KVM
+// implementations. It is retained so this fork continues to support the
+// original RD450X protocol alongside the ASUS single-port variant.
+const ModernVideoPacketBodySize = 373
 
 // header is an 8-byte IVTP packet header.
 type header struct {

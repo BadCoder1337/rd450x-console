@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -31,13 +32,14 @@ func dialVmedia(host string, port int, useTLS bool) (net.Conn, error) {
 	})
 }
 
-// Session is one device redirection: a TLS connection to a vmedia port that has
-// completed the IUSB auth handshake and is ready to serve SCSI requests.
+// Session is one device redirection connection that has completed the IUSB auth
+// handshake and is ready to serve SCSI requests.
 type Session struct {
 	conn       net.Conn
 	deviceType uint8
-	instance   uint8
 	Debug      bool // hex-dump every request/response (protocol bring-up)
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // Options configures a redirection session.
@@ -58,7 +60,32 @@ func Connect(ctx context.Context, opts Options, token string) (*Session, error) 
 	if err != nil {
 		return nil, fmt.Errorf("vmedia: dial %s:%d: %w", opts.Host, opts.Port, err)
 	}
-	s := &Session{conn: conn, deviceType: opts.DeviceType, instance: opts.Instance, Debug: opts.Debug}
+	if err := conn.SetDeadline(time.Now().Add(dialTimeout)); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("vmedia: set authentication deadline: %w", err)
+	}
+	s, err := ConnectConn(ctx, conn, opts, token)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("vmedia: clear authentication deadline: %w", err)
+	}
+	return s, nil
+}
+
+// ConnectConn authenticates an already-connected virtual-media stream. It is
+// used by single-port MegaRAC clients after switching an HTTPS connection to a
+// CDMEDIA/FDMEDIA/HDMEDIA service; Connect remains the dedicated-port entrypoint.
+// ConnectConn takes ownership of conn and closes it on failure.
+func ConnectConn(ctx context.Context, conn net.Conn, opts Options, token string) (*Session, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("vmedia: nil connection")
+	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
+	s := &Session{conn: conn, deviceType: opts.DeviceType, Debug: opts.Debug}
 
 	auth := buildAuth(opts.DeviceType, opts.Instance, token)
 	if s.Debug {
@@ -79,7 +106,7 @@ func Connect(ctx context.Context, opts Options, token string) (*Session, error) 
 			ack.Opcode(), len(ack.Payload), hex.Dump(ack.Payload[:min(len(ack.Payload), 64)]))
 	}
 	if err := ackStatus(ack); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	log.Printf("vmedia: redirection accepted (instance %d, port %d)", opts.Instance, opts.Port)
@@ -98,7 +125,7 @@ type Handler interface {
 func (s *Session) Serve(ctx context.Context, h Handler) error {
 	go func() {
 		<-ctx.Done()
-		s.conn.Close()
+		_ = s.Close()
 	}()
 
 	for {
@@ -132,8 +159,16 @@ func (s *Session) Serve(ctx context.Context, h Handler) error {
 	}
 }
 
-// Close terminates the session.
-func (s *Session) Close() error { return s.conn.Close() }
+// Close terminates the session. The original ASUS JViewer's
+// PacketMaster.VmediaSockclose method closes the single-port TLS socket without
+// sending an IUSB command; the outer connection must therefore produce an
+// orderly TLS close rather than killing its transport helper.
+func (s *Session) Close() error {
+	s.closeOnce.Do(func() {
+		s.closeErr = s.conn.Close()
+	})
+	return s.closeErr
+}
 
 // readPacket reads one IUSB packet: the 32-byte header, then DataPacketLen
 // payload bytes (the framing length lives at header offset 12, little-endian).

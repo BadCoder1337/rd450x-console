@@ -15,6 +15,8 @@ import { register } from "./panel.js";
 import {
   send,
   onMessage,
+  onOpen,
+  onClose,
   onIOError,
   setBacking,
   removeBacking,
@@ -117,13 +119,23 @@ export function build(container, before) {
   onMessage("vmedia.status", (m) => {
     const k = m.kind;
     if (!state[k]) return;
+    state[k].attaching = false;
     if (m.state === "mounted") {
       state[k].mounted = true;
       renderDevStatus(k, "mounted", null, state[k].name, state[k].size);
+    } else if (m.state === "error" && state[k].desired && retryDelay(m.code)) {
+      // /control usually reconnects before the asynchronous BMC login finishes
+      // ("not_ready"). Older firmware can also keep a detached slot busy for a
+      // while ("busy"). Keep the File backing and retry instead of losing the
+      // user's choice. The server classifies the error; see ctrlReply.Code.
+      const busy = m.code === "busy";
+      renderDevStatus(k, "mounting", busy ? "BMC slot busy; retrying…" : "waiting for BMC…");
+      setTimeout(() => attachDesired(k, "reconnecting…"), retryDelay(m.code));
     } else {
       // unmounted | error → close just this device's backing, leave others alone.
       removeBacking(DEV[k]);
       state[k].mounted = false;
+      state[k].desired = false;
       if (m.state === "error") {
         renderDevStatus(k, "error", "error");
         setMsg(`error (${labelOf(k)}): ${m.error || "unknown"}`);
@@ -134,6 +146,26 @@ export function build(container, before) {
   });
 
   onIOError((e) => setMsg("I/O error: " + (e?.message || e)));
+
+  onClose(() => {
+    for (const { kind } of KINDS) {
+      if (!state[kind].desired) continue;
+      state[kind].mounted = false;
+      state[kind].attaching = false;
+      renderDevStatus(kind, "mounting", "reconnecting…");
+    }
+  });
+
+  // A bridge rebuild/restart closes /control and therefore its BMC media
+  // sessions. The File objects remain valid in this page, so restore every
+  // desired mount when the socket reconnects instead of leaving a green but
+  // unusable stale status row behind.
+  onOpen(() => {
+    for (const { kind } of KINDS) {
+      if (!state[kind].desired) continue;
+      attachDesired(kind, "reconnecting…");
+    }
+  });
 
   // Drop any open backings if the page is closed mid-mount.
   window.addEventListener("pagehide", closeAllBackings);
@@ -168,21 +200,48 @@ function mountPending() {
   // Register the backing under this kind's device byte so on-demand sector requests
   // route to it; remember its metadata for the status row once mounted.
   setBacking(DEV[kind], backing);
+  state[kind].desired = true;
   state[kind].name = backing.name;
   state[kind].size = backing.size;
-  renderDevStatus(kind, "mounting", "mounting…");
-
-  send({ type: "vmedia.attach", kind, name: backing.name, size: backing.size });
+  attachDesired(kind, "mounting…");
 }
 
 function unmountCurrent() {
   const kind = kindSel.value;
-  if (!state[kind].mounted) {
+  if (!state[kind].mounted && !state[kind].desired) {
     setMsg(`${labelOf(kind)} is not mounted`);
     return;
   }
+  state[kind].desired = false;
+  state[kind].attaching = false;
   send({ type: "vmedia.detach", kind });
   // The backing is closed when the server confirms (vmedia.status unmounted).
+}
+
+function attachDesired(kind, label) {
+  if (!state[kind].desired || state[kind].attaching) return;
+  state[kind].attaching = true;
+  state[kind].mounted = false;
+  renderDevStatus(kind, "mounting", label);
+  send({
+    type: "vmedia.attach",
+    kind,
+    name: state[kind].name,
+    size: state[kind].size,
+  });
+}
+
+// retryDelay maps the server's vmedia.status error code to a retry interval in
+// ms; 0 means the error is not transient and the mount should be given up.
+function retryDelay(code) {
+  switch (code) {
+    case "not_ready":
+      return 2000;
+    case "busy":
+      return 10000;
+    default:
+      return 0;
+  }
 }
 
 // --- status rendering -------------------------------------------------------

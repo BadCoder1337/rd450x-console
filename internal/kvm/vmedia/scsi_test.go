@@ -147,6 +147,29 @@ func TestReadCapacity(t *testing.T) {
 	}
 }
 
+// Linux probes an optical device with READ TOC allocation length 12. The
+// emulator's complete TOC is 20 bytes, but exceeding the request length causes
+// a USB bulk-only-transport phase error on MegaRAC and must be clipped.
+func TestReadTOCRespectsTransferLength(t *testing.T) {
+	req := &Packet{Payload: []byte{
+		0x0c, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x00,
+		0x01, 0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00,
+	}}
+	cd := NewCDROM(patReader{size: 25 * cdBlockSize})
+	resp, err := cd.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got, want := len(resp)-len(req.Payload), 12; got != want {
+		t.Fatalf("READ TOC data len = %d, want %d", got, want)
+	}
+	if got := binary.LittleEndian.Uint32(resp[envOffRespLen : envOffRespLen+4]); got != 12 {
+		t.Errorf("response length field = %d, want 12", got)
+	}
+}
+
 // NewDisk (floppy/HD/USB) must use 512-byte Direct-Access blocks: READ CAPACITY
 // reports 512 and a READ(10) addresses 512-byte LBAs (so LBA 3 == byte 1536).
 func TestDiskProfile512(t *testing.T) {

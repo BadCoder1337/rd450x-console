@@ -1,8 +1,8 @@
 # rd450x-console
 
-A modern, single-binary remote console for a **Lenovo RD450X** server's AMI
-MegaRAC BMC, written in Go. It replaces the legacy `JViewer` Java Web Start
-client, which needs an ancient JRE (1.7) and runs with JVM security disabled
+A modern remote console for **Lenovo RD450X and ASUS ESC8000 G3** servers with
+AMI MegaRAC BMCs, written in Go. It replaces the legacy `JViewer` Java Web Start
+client, which needs an ancient JRE and runs with JVM security disabled
 (`<all-permissions/>`).
 
 <p float="left">
@@ -15,7 +15,7 @@ Two modes in one binary, no Java, no browser plugins:
 | Mode | What it does | Transport |
 |------|--------------|-----------|
 | `sol` | Interactive **Serial-over-LAN** console in your terminal | Standard IPMI 2.0 RMCP+ (UDP 623) |
-| `kvm` | **KVM / video** console in your browser via embedded noVNC | The BMC's proprietary IVTP/ASPEED protocol (TCP 7582, TLS) |
+| `kvm` | **KVM / video** console in your browser via embedded noVNC | Proprietary IVTP/ASPEED (dedicated port or MegaRAC HTTPS single-port tunnel) |
 
 Both are implemented and working end-to-end against a real RD450X (AMI MegaRAC,
 firmware 2.36): full POST + BIOS Setup + OS over SOL, and live decoded video
@@ -33,6 +33,15 @@ on modern systems. `rd450x-console` reimplements the two consoles natively:
 - **KVM** *did* require reverse-engineering the AMI wire format (there is no
   standard equivalent). The IVTP framing and the ASPEED VQ+JPEG+RC4 video codec
   were re-implemented clean-room in Go; see [`docs/kvm-protocol.md`](docs/kvm-protocol.md).
+
+The ASUS ESC8000 G3 single-port video and virtual-CD paths are live-tested
+against BMC firmware **1.14.51** (`ipmitool mc info`: Firmware Revision `1.14`,
+Aux `0x51`; ASUS package `1.14.5`; AMI MegaRAC on an ASPEED AST2400, IPMI
+manufacturer ID 2623 / product ID 3699): Linux enumerates and reads a
+browser-backed ISO through the emulated drive. The bridge is also wired for keyboard/mouse, IPMI power
+control, and floppy/HD virtual media; the BMC reports absolute mouse mode and its
+live power-status read is verified. Mutating power actions and floppy/HD media
+remain to be exercised on an offline box.
 
 ## Install
 
@@ -123,13 +132,37 @@ rd450x-console kvm                                   # → http://127.0.0.1:6080
 
 # Bind to all interfaces and don't auto-open a browser:
 rd450x-console kvm --listen 0.0.0.0:6080 --no-browser
+
+# Disable keyboard/mouse, power, and virtual-media controls:
+rd450x-console kvm --view-only
 ```
 
-Flags: `--host --user --port (7582) --tls (true) --listen (127.0.0.1:6080) --no-browser`.
+Flags: `--host --user --port (7582) --tls (true) --listen (127.0.0.1:6080)
+--no-browser --view-only (false)`.
 The binary acts as an RFB (VNC) server in the middle: it logs into the BMC web UI
 to mint a session token, completes the IVTP handshake, decodes the ASPEED video
-stream into RGB frames for noVNC, and forwards browser keyboard/mouse events back
-as USB HID reports. Clipboard text can be pasted into the console as keystrokes.
+stream into RGB frames for noVNC, and—unless view-only mode is enabled—forwards
+browser keyboard/mouse events as USB HID reports. Clipboard
+text can then be pasted into the console as keystrokes.
+
+**Transport selection.** The client logs into the BMC web UI over plain HTTP
+first and falls back to HTTPS only if that fails. The BMC's generated launch
+descriptor then decides the KVM transport:
+
+- **Dedicated port** (`singleportenabled=0`, e.g. the RD450X): `--port`/`--tls`
+  apply (default 7582, TLS on).
+- **Single port** (`singleportenabled=1`, e.g. the ASUS ESC8000 G3): `--port`
+  and `--tls` are **ignored**; the BMC's `kvmport`/`kvmsecure` are used instead.
+  They follow the web port the descriptor was fetched from — `80`/plaintext
+  when port 80 is open (the default on the tested ESC8000 G3), `443`/TLS
+  when only HTTPS is reachable. Video, keyboard/mouse and virtual media all
+  ride that one tunnel, so on the plaintext path **everything, including
+  keystrokes typed into the console, crosses the management LAN unencrypted**
+  — run this only on a trusted management network or over a VPN.
+  The TLS variant is carried by an `openssl s_client` child process, because
+  this firmware drops Go `crypto/tls` connections after the tunnel upgrade;
+  `openssl` therefore has to be on `PATH` only when the BMC is reached over
+  HTTPS.
 
 ## How SOL is wired on the RD450X
 
@@ -176,8 +209,10 @@ internal/sol/         SOL session, console event loop, escape handling, raw
                       terminal (ipmitool-style passthrough; decoupled receive/render/input)
 internal/kvm/         KVM client: IVTP transport, web-token auth, HID input
   codec/              ASPEED VQ + JPEG (DCT) + RC4 video decoder
+  vmedia/             AMI IUSB virtual-media transport + SCSI emulation
 internal/rfb/         minimal RFB 3.8 server bridging decoded frames to noVNC
-internal/webui/       go:embed noVNC frontend + WebSocket bridge
+internal/power/       IPMI chassis status/control used by the KVM toolbar
+internal/webui/       go:embed noVNC frontend + video/control WebSocket bridges
   novnc/              noVNC v1.5.0 — git submodule (novnc/noVNC)
 scripts/bench_sol_go/ SOL throughput benchmark
 scripts/bmc_reset_go/ BMC cold-reset helper
@@ -189,9 +224,9 @@ scripts/bmc_reset_go/ BMC cold-reset helper
 - [x] **KVM / video** — working end-to-end: auth, handshake, decoded video,
       keyboard/mouse HID, clipboard paste.
 
-Remaining polish and JViewer-parity items (power control, virtual media, mouse-mode
-negotiation, KM encryption, international keyboard layouts, video-fidelity
-validation) are tracked in [`TODO.md`](TODO.md).
+Remaining polish and validation items (relative-mouse support, keyboard LEDs,
+ASUS live input/FD/HD validation, and video-fidelity validation) are tracked in
+[`TODO.md`](TODO.md).
 
 ## License
 
