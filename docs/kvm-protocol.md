@@ -48,6 +48,7 @@ Findings from decompiling the BMC-served `JViewer.jar` + `JViewer-SOC.jar`
 | 7   | `SET_COMPRESSION_TYPE`        | C→S | |
 | 8   | `STOP_SESSION_IMMEDIATE`      | both | `status` = stop reason |
 | 9   | `BLANK_SCREEN`                | S→C | host video blanked → show "no signal" |
+| 10  | `GET_MOUSE_MODE` response     | S→C | byte0: 1 relative, 2 absolute, 3 other |
 | 11  | `GET_FULL_SCREEN`             | C→S | |
 | 12/13 | `ENABLE/DISABLE_ENCRYPTION`| both | toggle RC4 on the stream |
 | 14/15 | `ENCRYPTION_STATUS`/`INITIAL_ENCRYPTION_STATUS` | S→C | |
@@ -78,6 +79,53 @@ C→S  IVTP type=6  RESUME_REDIRECTION
 S→C  IVTP type=25 VIDEO_FRAGMENT … (frames begin)
 C→S  IVTP type=57 KEEP_ALIVE every few seconds
 ```
+
+### ASUS ESC8000 G3 single-port variant
+
+Verified against BMC firmware **1.14.51** (`ipmitool mc info`: revision `1.14`,
+aux `0x51`; ASUS package 1.14.5; AMI MegaRAC, ASPEED AST2400).
+
+The ESC8000 G3 JNLP advertises `singleportenabled=1` and `kvmport`/`kvmsecure`
+matching the web port the JNLP was fetched from: `443`/`1` over HTTPS, but
+`80`/`0` when the launcher is fetched over HTTP — in the latter case the whole
+tunnel (video, HID, virtual media) runs in plaintext TCP and `openssl` is not
+involved. Its older JViewer dialect first switches the authenticated
+connection from HTTP to video service:
+
+```text
+C→S  CONNECT <host>:443 HTTPS/1.1\n cookie <webcookie>\r\n\r\n
+C→S  JVIEWER VIDEO cookie <webcookie>\r\n\r\n
+S→C  HTTP/1.0 200 OK\r\n\r\n
+S→C  IVTP type=23 SESSION_ACCEPTED
+C→S  IVTP type=21, payload=<webcookie>
+C→S  IVTP type=18, 332 bytes total (legacy validation layout below)
+C→S  IVTP type=6 RESUME_REDIRECTION
+S→C  IVTP type=19 VALIDATE_VIDEO_SESSION_RESPONSE
+C→S  IVTP type=11 GET_FULL_SCREEN
+S→C  IVTP type=25 VIDEO_FRAGMENT ...
+```
+
+The two tunnel requests are separate writes, matching `SinglePortKVM`. This
+firmware does not implement the newer type-57 keepalive or type-58 connection
+complete packets; either causes it to close the video socket.
+
+Virtual media uses a fresh connection through the same port-443 multiplexer for
+each mounted device. The first `CONNECT` request is identical; the second request
+selects `CDMEDIA`, `FDMEDIA`, or `HDMEDIA` instead of `VIDEO`. The normal IUSB
+authentication and SCSI sector protocol begins after the HTTP 200 response:
+
+```text
+C→S  CONNECT <host>:443 HTTPS/1.1\n cookie <webcookie>\r\n\r\n
+C→S  JVIEWER CDMEDIA|FDMEDIA|HDMEDIA cookie <webcookie>\r\n\r\n
+S→C  HTTP/1.0 200 OK\r\n\r\n
+C→S  IUSB session-token authentication ...
+```
+
+The legacy type-18 packet is 332 bytes including its 8-byte header. Its unusual
+`pktSize` field is also 332. The 324-byte body contains only the 130-byte token
+block, 65-byte client-IP field, and 129-byte username field; there is no MAC
+field. These quirks were confirmed against the bundled JViewer bytecode and a
+live ESC8000 G3 session.
 
 ### type=18 body (373 bytes, the `VIDEO_PACKET_SIZE`)
 
@@ -117,8 +165,8 @@ The ASPEED video engine output — a tile-based hybrid:
     `previousYUVData` retained).
 - `m_Mode420` — YUV 4:2:0 chroma subsampling.
 - **RC4 layer:** `Decoder` holds an `rc4_state`; `DecodeKeys = "fedcba9876543210"`.
-  When stream encryption is on (opcodes 12/14/15), tile data is RC4-decrypted
-  before entropy decode. Encryption can also be disabled per session.
+  Frame metadata controls whether tile data is RC4-decrypted before entropy
+  decode. This is separate from keyboard/mouse encryption below.
 
 This decoder is ~2k lines of bit-level work and is the single largest porting
 task. It is fully deterministic and translatable line-for-line.
@@ -127,9 +175,15 @@ task. It is fully deterministic and translatable line-for-line.
 
 `com.ami.kvm.jviewer.hid.*` — standard **USB HID reports** (8-byte keyboard
 report, mouse report with absolute or relative coords). Layouts map host keys to
-USB usage codes (`USBKeyProcessor*`). Reports may be RC4-encrypted via `KMCrypt`
+USB usage codes (`USBKeyProcessor*`). Reports may be encrypted via `KMCrypt`
 when KM encryption is negotiated; otherwise sent in clear inside a type=1 IVTP
-packet. Power control is type=35 with `status` = action
+packet. In this JViewer generation `KMCrypt` is
+**Blowfish/ECB/NoPadding** keyed by the KVM token, despite the video decoder's
+unrelated RC4 implementation. Opcode 15 enables it initially (opcode 14 confirms
+an explicit enable); the raw 6/8-byte USB report is zero-padded to an 8-byte block,
+encrypted, and the IVTP status becomes `0xFF`.
+
+Power control is type=35 with `status` = action
 (`0` off / `1` on / `2` cycle / `3` hard reset / `5` soft reset).
 
 ## Notes for a reimplementation

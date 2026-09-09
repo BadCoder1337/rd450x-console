@@ -188,6 +188,16 @@ func (c *Device) Handle(req *Packet) ([]byte, error) {
 // correctly end-to-end.
 func (c *Device) buildResponse(req *Packet, data []byte) []byte {
 	env := req.Payload
+	// envOffDataLen is the host's expected data-in transfer size on requests.
+	// Returning more than that (notably a full 20-byte READ TOC when Linux asks
+	// for 12) produces a USB BOT phase error and wedges the virtual CD until the
+	// device is reset. Zero means this is a status-only command, not a limit.
+	if len(env) >= envOffDataLen+4 {
+		want := binary.LittleEndian.Uint32(env[envOffDataLen : envOffDataLen+4])
+		if want > 0 && uint64(len(data)) > uint64(want) {
+			data = data[:int(want)]
+		}
+	}
 	out := make([]byte, len(env)+len(data))
 	copy(out, env)
 	copy(out[len(env):], data)

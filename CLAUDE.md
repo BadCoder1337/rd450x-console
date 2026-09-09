@@ -5,15 +5,16 @@ in this repository.
 
 ## Project goal
 
-A modern remote console for a **Lenovo RD450X** server's AMI MegaRAC BMC,
-replacing the legacy `JViewer` Java Web Start client (which needs an ancient JRE
-1.7 and disabled JVM security, `<all-permissions/>`).
+A modern remote console for **Lenovo RD450X and ASUS ESC8000 G3** AMI MegaRAC
+BMCs, replacing the legacy `JViewer` Java Web Start client (which needs an
+ancient JRE and disabled JVM security, `<all-permissions/>`).
 
 The client is a single `rd450x-console` Go binary with two subcommands:
 
 - **`sol`** — Serial-over-LAN console over standard IPMI 2.0 RMCP+ (UDP 623).
 - **`kvm`** — KVM/video console: an RFB (VNC) server bridging the BMC's
-  proprietary IVTP/ASPEED protocol (TCP 7582, TLS) to an embedded noVNC frontend.
+  proprietary IVTP/ASPEED protocol (dedicated port or MegaRAC HTTPS single-port
+  tunnel) to an embedded noVNC frontend.
 
 **Both are implemented and working.** SOL was built first (no reverse engineering
 needed — the BMC speaks standard SOL); the KVM path required reverse-engineering
@@ -36,8 +37,10 @@ go vet ./...
 ./bin/rd450x-console kvm                              # → http://127.0.0.1:6080/vnc.html
 ```
 
-Requires Go 1.24+. `internal/webui/novnc` is a git submodule and **must** be
-checked out before building — `go:embed` fails without it.
+Requires Go 1.24+. `openssl` must be on `PATH` only when a single-port BMC is
+reached over HTTPS (the TLS tunnel is carried by `openssl s_client`; see
+`internal/kvm/transport_openssl.go`). `internal/webui/novnc` is a git submodule
+and **must** be checked out before building — `go:embed` fails without it.
 
 ## The target system (from `jviewer.jnlp`)
 
@@ -47,10 +50,17 @@ client name "JViewer"), firmware 2.36, ASPEED AST SoC. Key facts:
 - **BMC host:** `192.168.1.90`, web/IPMI UI on port **80**.
 - **SOL:** standard IPMI 2.0 SOL over RMCP+ (UDP 623) — the simple path.
 - **KVM/console port:** **7582**, `kvmsecure=1` (TLS-wrapped AMI IVTP protocol).
-- **Virtual media ports:** CD `5120`, FD `5122`, HD `5123` (not yet implemented).
+- **Virtual media ports:** CD `5120`, FD `5122`, HD `5123`.
 - Auth is session-based: the web UI mints a session token (`STOKEN`) and a web
   cookie per login. The KVM client logs in to obtain fresh ones — never hardcode
   the stale example tokens from `jviewer.jnlp`.
+
+The ASUS ESC8000 G3 (BMC firmware 1.14.51 — `ipmitool` main `1.14`, aux
+`0x51`; ASUS package 1.14.5; AMI MegaRAC on AST2400) instead advertises
+`singleportenabled=1` and multiplexes `VIDEO`, `CDMEDIA`, `FDMEDIA`, and
+`HDMEDIA` through its web port. Its video and virtual-CD read paths are
+live-tested against that firmware; see `docs/kvm-protocol.md` and
+`docs/kvm-vmedia.md`.
 
 ## Credentials & secret-handling protocol
 
@@ -70,8 +80,8 @@ internal/config/      .env / env-var credential loading (password never printed)
 internal/sol/         RMCP+ SOL session loop, seq/ack, Ctrl-] escape menu,
                       decoupled receive/render/input, raw ipmitool-style
                       terminal passthrough (host terminal in raw mode)
-internal/kvm/         IVTP transport (TLS 7582), web-token auth, frame read loop,
-                      USB HID keyboard/mouse input
+internal/kvm/         IVTP dedicated/single-port transport, web-token auth,
+                      frame read loop, USB HID input, virtual-media control
 internal/kvm/codec/   ASPEED VQ + JPEG (DCT) + RC4 video decoder (clean-room)
 internal/rfb/         minimal RFB 3.8 server (Raw encoding) → noVNC
 internal/webui/       go:embed noVNC + /websockify bridge + browser open

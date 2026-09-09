@@ -36,10 +36,11 @@ func RunCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("kvm", flag.ContinueOnError)
 	host := fs.String("host", "", "BMC host (default: IPMI_HOST)")
 	user := fs.String("user", "", "BMC user (default: IPMI_USER)")
-	port := fs.Int("port", 7582, "KVM video port")
-	useTLS := fs.Bool("tls", true, "wrap the video socket in TLS (kvmsecure)")
+	port := fs.Int("port", 7582, "KVM video port (dedicated-port BMCs only; single-port BMCs advertise their own)")
+	useTLS := fs.Bool("tls", true, "wrap the video socket in TLS (dedicated-port BMCs only; single-port BMCs advertise kvmsecure)")
 	listen := fs.String("listen", "127.0.0.1:6080", "local web server address")
 	noBrowser := fs.Bool("no-browser", false, "do not open a browser automatically")
+	viewOnly := fs.Bool("view-only", false, "disable keyboard, mouse, power, and virtual-media controls")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -61,26 +62,29 @@ func RunCommand(ctx context.Context, args []string) error {
 	)
 
 	if creds.Host != "" && creds.User != "" && creds.Password != "" {
-		// Power control rides standard IPMI chassis control over RMCP+ (UDP 623),
-		// independent of the KVM video port.
-		control = powerControl{power.New(creds.Host, config.PortOr(623), creds.User, creds.Password)}
-		// Virtual media opens an AMI IUSB redirection per attach, backed by bytes
-		// the browser streams on demand (File.slice / WebUSB). It reuses the KVM
-		// client's web session for auth, so the live client is published to it once
-		// connected (below).
-		vmCtl := newVMediaControl(creds.Host)
-		vmediaCtl = vmCtl
-		// Real BMC: a dynamic FrameSource fed by decoded video, and a HID Sink
-		// driving keyboard/mouse. Both are created up front so the BMC client's
-		// OnFrame and the sink are wired before Run starts.
+		// Real BMC: a dynamic FrameSource fed by decoded video.
 		const initW, initH = 1024, 768
 		fsrc := rfb.NewFrameSource(initW, initH)
-		// The BMC connects asynchronously, so the real HID sink isn't available
-		// until then. A late-binding sink discards input until it is published,
-		// avoiding a data race on the pointer.
-		late := newLateSink()
 		src = fsrc
-		sink = late
+
+		var late *lateSink
+		var vmCtl *vmediaControl
+		if *viewOnly {
+			// Safe default for remote-server investigation: browser input is
+			// discarded and the mutating HTTP controllers are not registered.
+			sink = rfb.NopSink()
+			log.Printf("kvm: view-only mode; input, power, and virtual media disabled")
+		} else {
+			// Power control rides standard IPMI chassis control over RMCP+ (UDP
+			// 623), independent of the KVM video port.
+			control = powerControl{power.New(creds.Host, config.PortOr(623), creds.User, creds.Password)}
+			// Virtual media reuses the KVM client's web session for auth.
+			vmCtl = newVMediaControl(creds.Host)
+			vmediaCtl = vmCtl
+			// The real HID sink becomes available after the asynchronous BMC dial.
+			late = newLateSink()
+			sink = late
+		}
 		go connectBMC(ctx, Options{
 			Host: creds.Host, Port: *port, TLS: *useTLS, User: creds.User,
 		}, creds.Password, fsrc, late, vmCtl)
@@ -102,15 +106,22 @@ func connectBMC(ctx context.Context, opts Options, password string, fsrc *rfb.Fr
 		log.Printf("kvm: BMC connect failed: %v", err)
 		return
 	}
-	log.Printf("kvm: connected to BMC %s:%d, streaming video fragments", opts.Host, opts.Port)
-	vmCtl.setClient(c)
+	log.Printf("kvm: connected to BMC %s, streaming video fragments", opts.Host)
+	if vmCtl != nil {
+		vmCtl.setClient(c)
+	}
 
-	hid := NewSink(ctx, c, 1024, 768)
+	var hid *HIDSink
+	if late != nil {
+		hid = NewSink(ctx, c, 1024, 768)
+		late.set(hid)
+	}
 	c.OnFrame = func(f *codec.Frame) {
 		fsrc.Update(f.W, f.H, f.Pix)
-		hid.SetFrameSize(f.W, f.H)
+		if hid != nil {
+			hid.SetFrameSize(f.W, f.H)
+		}
 	}
-	late.set(hid)
 
 	if err := c.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("kvm: BMC session ended: %v", err)

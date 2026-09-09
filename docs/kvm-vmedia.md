@@ -232,6 +232,31 @@ boards that set it.) Ports come from the jnlp: CD `cdport` **5120**, floppy
 `fdport` **5122**, HD `hdport` **5123**; `singleportenabled=0` here (dedicated
 ports, not tunnelled through the KVM port). `kvmtokentype`/token type 0 = web.
 
+The ASUS ESC8000 G3 (BMC firmware 1.14.51) instead advertises
+`singleportenabled=1` and no dedicated media ports; its `kvmport`/`kvmsecure`
+mirror the web port the JNLP was fetched from (`80`/`0` over HTTP, which is the
+client's default, or `443`/`1` over HTTPS). For each mount the client opens a
+fresh connection to that port, performs MegaRAC's two-write tunnel upgrade, and
+selects `CDMEDIA`, `FDMEDIA`, or `HDMEDIA`; the same IUSB authentication below
+then runs over the upgraded stream. This mirrors the bundled JViewer's
+`SinglePortKVM.setHTTPConnect` path. The CD path is live-tested with a multi-GB
+browser-backed ISO (Linux enumerates it as ISO9660 and reads sectors) and, over
+the plaintext port-80 tunnel, with a 32 MiB random image read back end-to-end
+with a matching SHA-256. On that host the BMC issued mostly 120 KiB READ(10)s
+(≈120 KiB → 240 KB/s observed throughput).
+
+**Detach behaviour on this firmware (observed 2026-09-08).** Over the
+plaintext tunnel a detach (client closes the media socket and sends the type-24
+media-state `0` on the video session) removed the virtual CD from the host
+within seconds. Over the TLS tunnel the same sequence left the whole virtual USB
+tree (hub, CD, floppy, HD, keyboard/mouse — `046b:ff01/ff20/ff40/ff31/ff10`)
+attached to the host for more than 15 minutes with a dead CD that the host kept
+resetting, and the BMC's IVTP server stopped accepting new KVM sessions on both
+ports (the tunnel upgrade succeeds, but no `SESSION_ACCEPTED` follows). The
+earlier "roughly three minutes" retention was a milder instance of this. Until
+the cause is understood, prefer the plaintext path and expect a BMC cold reset
+(`ipmitool mc reset cold`) to be the only way to recover a stuck media daemon.
+
 **32-byte IUSB header** (`IUSBHeader`), all multi-byte fields **little-endian**:
 
 | off | size | field            | value / meaning                                  |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -39,10 +40,11 @@ type VMediaController interface {
 	Attach(ctx context.Context, kind string, backing vmedia.ReadWriter, size int64, writable bool) (Mount, error)
 }
 
-// Mount is an active virtual-media redirection; Close detaches it and releases the
-// BMC web session opened for it.
+// Mount is an active virtual-media redirection. Done reports when its BMC data
+// plane exits, including an unsolicited disconnect; Close requests detachment.
 type Mount interface {
 	Close() error
+	Done() <-chan error
 }
 
 // Binary control-frame opcodes (server → browser requests). See docs/kvm-vmedia.md.
@@ -106,6 +108,23 @@ type ctrlReply struct {
 	On     bool   `json:"on,omitempty"`
 	State  string `json:"state,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Code is a machine-readable hint accompanying vmedia.status errors so the
+	// browser can decide whether to retry: "not_ready" (BMC login still in
+	// progress) or "busy" (firmware still holds the device slot). Empty when
+	// the error is not known to be transient.
+	Code string `json:"code,omitempty"`
+}
+
+// vmediaErrorCode classifies an attach/serve error for the browser.
+func vmediaErrorCode(err error) string {
+	switch {
+	case errors.Is(err, vmedia.ErrNotReady):
+		return "not_ready"
+	case errors.Is(err, vmedia.ErrDeviceBusy):
+		return "busy"
+	default:
+		return ""
+	}
 }
 
 // vmResp is a decoded binary response from the browser to one of our requests.
@@ -264,12 +283,37 @@ func (cc *controlConn) handleAttach(m ctrlMsg) {
 	mt, err := cc.vmedia.Attach(cc.ctx, m.Kind, backing, m.Size, m.Writable)
 	if err != nil {
 		log.Printf("control: vmedia attach %s (%s, %d bytes): %v", m.Kind, m.Name, m.Size, err)
-		cc.reply(&ctrlReply{Type: "vmedia.status", Kind: m.Kind, State: "error", Error: err.Error()})
+		cc.reply(&ctrlReply{Type: "vmedia.status", Kind: m.Kind, State: "error", Error: err.Error(), Code: vmediaErrorCode(err)})
 		return
 	}
 	cc.setMount(m.Kind, mt)
 	log.Printf("control: vmedia attached %s %q (%d bytes, writable=%v)", m.Kind, m.Name, m.Size, m.Writable)
 	cc.reply(&ctrlReply{Type: "vmedia.status", Kind: m.Kind, State: "mounted"})
+	go cc.watchMount(m.Kind, mt)
+}
+
+// watchMount removes a redirection that ended at the BMC side and corrects the
+// browser's status. Explicit detach removes the map entry before Close, so its
+// normal "unmounted" reply remains the only one sent for that path.
+func (cc *controlConn) watchMount(kind string, mt Mount) {
+	err := <-mt.Done()
+	cc.mmu.Lock()
+	if cc.mounts[kind] != mt {
+		cc.mmu.Unlock()
+		return
+	}
+	delete(cc.mounts, kind)
+	cc.mmu.Unlock()
+
+	if cc.ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		log.Printf("control: vmedia %s ended: %v", kind, err)
+		cc.reply(&ctrlReply{Type: "vmedia.status", Kind: kind, State: "error", Error: err.Error(), Code: vmediaErrorCode(err)})
+		return
+	}
+	cc.reply(&ctrlReply{Type: "vmedia.status", Kind: kind, State: "unmounted"})
 }
 
 func (cc *controlConn) handleDetach(m ctrlMsg) {

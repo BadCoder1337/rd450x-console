@@ -40,9 +40,9 @@ import (
 // The checksum at [19] is computed over buf[8:40] (the IUSB header, NOT the USB
 // report) and stored as the two's-complement negation of the low byte.
 //
-// We only implement the unencrypted form. When the BMC negotiates KM encryption
-// the report data would be RC4-wrapped via KMCrypt and the sizes grow to 49.
-// TODO(kvm): KMCrypt RC4 when server enables KM encryption.
+// When the BMC sends INITIAL_ENCRYPTION_STATUS, Client.SendHIDReport transforms
+// the raw USB-report tail with JViewer-compatible Blowfish/ECB/NoPadding and
+// marks the IVTP packet status 0xFF. See kmcrypt.go.
 
 const (
 	iusbDeviceKeybd = 48
@@ -120,9 +120,18 @@ func mouseAbsReport(btn byte, x, y int16, wheel byte) []byte {
 	return buf
 }
 
-// SendHIDReport writes a pre-built IVTP HID packet to the BMC using the client's
-// write mutex.
-func (c *Client) SendHIDReport(report []byte) error { return c.write(report) }
+// SendHIDReport applies negotiated keyboard/mouse encryption when required, then
+// writes the IVTP HID packet to the BMC using the client's write mutex.
+func (c *Client) SendHIDReport(report []byte) error {
+	if c.kmEncryption.Load() {
+		var err error
+		report, err = c.encryptHIDReport(report)
+		if err != nil {
+			return err
+		}
+	}
+	return c.write(report)
+}
 
 // HIDSink implements rfb.Sink, maintaining keyboard and mouse state and emitting
 // USB HID reports to the BMC via the Client.

@@ -59,9 +59,27 @@ func Login(ctx context.Context, host, user, password string) (WebSession, error)
 //
 // The token/cookie values in the map are secrets — callers must not log them.
 func FetchLaunchArgs(ctx context.Context, host, user, password string) (map[string]string, string, error) {
-	hc := &http.Client{Timeout: 15 * time.Second}
-	base := "http://" + host
+	hc := newWebClient(15 * time.Second)
+	var errs []string
+	// Retain the RD450X's original port-80 flow, then fall back to HTTPS for
+	// MegaRAC variants that expose the launcher only on their secure listener.
+	for _, base := range []string{"http://" + host, "https://" + host} {
+		args, cookie, err := fetchLaunchArgsAtBase(ctx, hc, base, host, user, password)
+		if err == nil {
+			return args, cookie, nil
+		}
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+		if cookie != "" {
+			logoutAtBase(hc, base, cookie)
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", strings.TrimSuffix(base, host), err))
+	}
+	return nil, "", fmt.Errorf("BMC web launch failed (%s)", strings.Join(errs, "; "))
+}
 
+func fetchLaunchArgsAtBase(ctx context.Context, hc *http.Client, base, host, user, password string) (map[string]string, string, error) {
 	// Step 1: create web session.
 	form := url.Values{"WEBVAR_USERNAME": {user}, "WEBVAR_PASSWORD": {password}}
 	body, err := httpDo(ctx, hc, http.MethodPost, base+"/rpc/WEBSES/create.asp",
@@ -81,10 +99,10 @@ func FetchLaunchArgs(ctx context.Context, host, user, password string) (map[stri
 	body, err = httpDo(ctx, hc, http.MethodGet, jnlpURL, nil,
 		map[string]string{"Cookie": "SessionCookie=" + cookie})
 	if err != nil {
-		return nil, "", fmt.Errorf("launch jnlp: %w", err)
+		return nil, cookie, fmt.Errorf("launch jnlp: %w", err)
 	}
 	if strings.Contains(body, "session_expired") {
-		return nil, "", fmt.Errorf("launch jnlp: BMC rejected the web session (session_expired) — " +
+		return nil, cookie, fmt.Errorf("launch jnlp: BMC rejected the web session (session_expired) — " +
 			"likely too many stale web sessions on the card; wait for them to idle out or reduce concurrent logins")
 	}
 	return parseJNLPArgs(body), cookie, nil
@@ -96,14 +114,37 @@ func Logout(host, cookie string) {
 	if cookie == "" {
 		return
 	}
-	hc := &http.Client{Timeout: 8 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, "http://"+host+"/rpc/WEBSES/logout.asp", nil)
+	hc := newWebClient(8 * time.Second)
+	for _, base := range []string{"http://" + host, "https://" + host} {
+		if logoutAtBase(hc, base, cookie) {
+			return
+		}
+	}
+}
+
+func logoutAtBase(hc *http.Client, base, cookie string) bool {
+	req, err := http.NewRequest(http.MethodGet, base+"/rpc/WEBSES/logout.asp", nil)
 	if err != nil {
-		return
+		return false
 	}
 	req.Header.Set("Cookie", "SessionCookie="+cookie)
 	if resp, err := hc.Do(req); err == nil {
 		resp.Body.Close()
+		return resp.StatusCode >= 200 && resp.StatusCode < 300
+	}
+	return false
+}
+
+// newWebClient accepts the old, self-signed certificate presented by this
+// generation of MegaRAC. Callers should reach it only over a trusted management
+// path because this deliberately does not authenticate the peer certificate.
+func newWebClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig:   legacyTLSConfig(),
+			DisableKeepAlives: true,
+		},
 	}
 }
 
@@ -142,23 +183,23 @@ func httpDo(ctx context.Context, hc *http.Client, method, u string, body io.Read
 	return string(b), nil
 }
 
-// buildValidatePacket assembles the IVTP type=18 VALIDATE_VIDEO_SESSION packet:
-// an 8-byte header followed by a 373-byte body of zero-padded fixed-width fields.
+// buildLegacyValidatePacket assembles the exact IVTP type=18 packet produced by
+// the JViewer bundled with the ASUS ESC8000 G3. The packet is 332 bytes total,
+// and its Size header unusually contains that total rather than the 324-byte
+// body length.
 //
 //	[0]      token type (0 = web session token)
 //	[1..129] session token
 //	[130..194] client IP
 //	[195..323] client username
-//	[324..372] client MAC (aa-bb-cc-...)
-func buildValidatePacket(token, clientIP, username, mac string) []byte {
+func buildLegacyValidatePacket(token, clientIP, username string) []byte {
 	const (
 		tokenField = 130 // type byte + token
 		ipField    = 65
 		userField  = 129
-		macField   = 49
 	)
-	h := header{Type: opValidateVideo, Size: VideoPacketSize}
-	buf := make([]byte, HeaderSize+VideoPacketSize)
+	h := header{Type: opValidateVideo, Size: LegacyVideoPacketSize}
+	buf := make([]byte, LegacyVideoPacketSize)
 	copy(buf, h.marshal())
 
 	body := buf[HeaderSize:]
@@ -166,6 +207,29 @@ func buildValidatePacket(token, clientIP, username, mac string) []byte {
 	body[off] = 0 // WEB_SESSION_TOKEN
 	putFixed(body[off+1:off+tokenField], token)
 	off += tokenField
+	putFixed(body[off:off+ipField], clientIP)
+	off += ipField
+	putFixed(body[off:off+userField], username)
+	return buf
+}
+
+// buildValidatePacket builds the newer dedicated-port validation packet used
+// by the original RD450X implementation.
+func buildValidatePacket(token, clientIP, username, mac string) []byte {
+	const (
+		tokenField = 130
+		ipField    = 65
+		userField  = 129
+		macField   = 49
+	)
+	h := header{Type: opValidateVideo, Size: ModernVideoPacketBodySize}
+	buf := make([]byte, HeaderSize+ModernVideoPacketBodySize)
+	copy(buf, h.marshal())
+
+	body := buf[HeaderSize:]
+	body[0] = 0
+	putFixed(body[1:tokenField], token)
+	off := tokenField
 	putFixed(body[off:off+ipField], clientIP)
 	off += ipField
 	putFixed(body[off:off+userField], username)

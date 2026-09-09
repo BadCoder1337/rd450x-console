@@ -1,8 +1,21 @@
 package vmedia
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+)
+
+// Sentinel errors the control plane maps to machine-readable retry hints for
+// the browser, so the UI does not have to pattern-match error text.
+var (
+	// ErrNotReady means the KVM client has not finished logging in to the BMC
+	// yet; an attach retried a moment later will normally succeed.
+	ErrNotReady = errors.New("BMC session not ready yet")
+	// ErrDeviceBusy means the BMC still considers the device slot in use
+	// (redirection ACK status 5/8). Older firmware keeps a detached slot busy
+	// for a while; retrying after a pause usually succeeds.
+	ErrDeviceBusy = errors.New("BMC media slot busy")
 )
 
 // buildAuth assembles the IUSB session-token authentication packet for a device
@@ -50,7 +63,7 @@ func ackStatus(p *Packet) error {
 	case connOK:
 		return nil
 	case connErrInUse5, connErrInUse8:
-		return fmt.Errorf("vmedia: BMC rejected redirection (device error, status %d)", status)
+		return fmt.Errorf("vmedia: %w (redirection refused, status %d)", ErrDeviceBusy, status)
 	default:
 		if ip := otherIP(p.Payload); ip != "" {
 			return fmt.Errorf("vmedia: device already redirected by %s (status %d)", ip, status)

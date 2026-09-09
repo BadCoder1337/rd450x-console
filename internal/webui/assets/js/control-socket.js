@@ -30,9 +30,10 @@ const outbox = []; // JSON messages queued until the socket is open
 // exposes read(offset,len) → Uint8Array, write(offset,bytes) → void, close() → void.
 const backings = new Map();
 
-// JSON message handlers keyed by message type, plus an onOpen callback list.
+// JSON message handlers keyed by message type, plus connection lifecycle hooks.
 const jsonHandlers = new Map();
 const openHandlers = [];
+const closeHandlers = [];
 
 // onMessage routes a JSON control reply to its registered handler.
 export function onMessage(type, fn) {
@@ -43,6 +44,12 @@ export function onMessage(type, fn) {
 // re-query state (e.g. refresh power) after a bridge restart.
 export function onOpen(fn) {
   openHandlers.push(fn);
+}
+
+// onClose registers a callback fired when an established socket is lost. This
+// lets stateful panels distinguish a bridge restart from a rejected command.
+export function onClose(fn) {
+  closeHandlers.push(fn);
 }
 
 // send queues a JSON control message, flushing immediately if the socket is open.
@@ -87,7 +94,11 @@ export function connect() {
     for (const fn of openHandlers) fn();
   };
   ws.onclose = () => {
+    const wasReady = wsReady;
     wsReady = false;
+    if (wasReady) {
+      for (const fn of closeHandlers) fn();
+    }
     setTimeout(connect, 2000); // survive bridge restarts / page idle
   };
   ws.onerror = () => ws?.close();
