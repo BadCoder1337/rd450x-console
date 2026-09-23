@@ -12,6 +12,8 @@
 //   Keyboard:      toggle physical-key (scancode) pass-through for international
 //                  layouts — patches noVNC's key path locally, no server traffic.
 //
+// It also adds arrow keys and F1..F12 to noVNC's own Extra keys drawer.
+//
 // Power and Virtual Media ride the out-of-band /control WebSocket, never the RFB
 // video socket, so a control command can't stall the framebuffer.
 
@@ -20,6 +22,7 @@ import { connect } from "./control-socket.js";
 import * as power from "./power.js";
 import * as vmedia from "./vmedia.js";
 import * as keyboard from "./keyboard.js";
+import * as extrakeys from "./extrakeys.js";
 
 function init() {
   const bar = document.getElementById("noVNC_control_bar");
@@ -33,6 +36,7 @@ function init() {
   power.build(container, before);
   vmedia.build(container, before);
   keyboard.build(container, before);
+  extrakeys.build();
 
   installOutsideClose();
   connect();
