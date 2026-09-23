@@ -102,7 +102,7 @@ func connectBMC(ctx context.Context, opts Options, password string, fsrc *rfb.Fr
 		log.Printf("kvm: BMC connect failed: %v", err)
 		return
 	}
-	log.Printf("kvm: connected to BMC %s:%d, streaming video fragments", opts.Host, opts.Port)
+	log.Printf("kvm: connected to BMC %s, streaming video fragments", opts.Host) // port may come from the jnlp
 	vmCtl.setClient(c)
 
 	hid := NewSink(ctx, c, 1024, 768)

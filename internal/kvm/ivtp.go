@@ -27,6 +27,7 @@ const (
 	opDisableEncryption  uint16 = 13
 	opEncryptionStatus   uint16 = 14
 	opInitialEncryption  uint16 = 15
+	opWebCookie          uint16 = 21 // older firmware: web cookie before validate
 	opValidateVideo      uint16 = 18
 	opValidateVideoResp  uint16 = 19
 	opGetKeybdLED        uint16 = 20

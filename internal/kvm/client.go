@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -36,6 +37,7 @@ type Client struct {
 	webCookie string
 	webToken  string            // STOKEN, reused for virtual-media auth
 	webArgs   map[string]string // parsed jnlp args (vmedia ports, vmsecure)
+	legacy    bool              // older firmware: legacy handshake, no keep-alive packet
 
 	OnFrame FrameFunc // optional; invoked on each decoded frame
 }
@@ -75,7 +77,24 @@ func Connect(ctx context.Context, opts Options, password string) (*Client, error
 	sess := WebSession{Token: token, Cookie: webcookie}
 	log.Printf("kvm: web session established (token %d bytes)", len(token))
 
+	// Single-port firmware (singleportenabled=1) has no separate KVM port: the
+	// video stream is tunnelled through the web server at kvmport, and the jnlp's
+	// kvmport/kvmsecure override the defaults.
+	singlePort := args["singleportenabled"] == "1"
+	if singlePort {
+		if p, perr := strconv.Atoi(args["kvmport"]); perr == nil && p > 0 {
+			opts.Port = p
+		}
+		opts.TLS = args["kvmsecure"] == "1"
+		log.Printf("kvm: single-port mode, tunnelling through port %d (tls=%v)", opts.Port, opts.TLS)
+	}
+
 	conn, err := dial(opts.Host, opts.Port, opts.TLS)
+	if err == nil && singlePort {
+		if err = tunnelHandshake(conn, opts.Host, opts.Port, opts.TLS, webcookie); err != nil {
+			conn.Close()
+		}
+	}
 	if err != nil {
 		Logout(opts.Host, webcookie)
 		return nil, fmt.Errorf("dial video port: %w", err)
@@ -132,6 +151,19 @@ func (c *Client) handshake(sess WebSession, user string) error {
 		}
 		switch h.Type {
 		case opSessionAccepted:
+			// Older firmware (AMI 2013, seen on an ASRock Rack C2550D4I with BMC
+			// 0.35) sends 23 with no client list and wants its own JViewer's
+			// sequence: the web cookie as a type 21 packet, then a short validate.
+			if h.Size == 0 {
+				c.legacy = true
+				ip, _ := localAddrInfo(c.conn)
+				pkt := append(header{Type: opWebCookie, Size: uint32(len(sess.Cookie))}.marshal(), sess.Cookie...)
+				pkt = append(pkt, buildLegacyValidatePacket(sess.Token, ip)...)
+				if err := c.write(pkt); err != nil {
+					return fmt.Errorf("send legacy validate: %w", err)
+				}
+				continue
+			}
 			if h.Size > 0 {
 				if _, err := c.r.Discard(int(h.Size)); err != nil {
 					return fmt.Errorf("read session-accepted body: %w", err)
@@ -270,6 +302,9 @@ func (c *Client) keepAlive(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if c.legacy {
+				continue
+			}
 			if err := c.sendHeader(opKeepAlive, 0); err != nil {
 				return
 			}

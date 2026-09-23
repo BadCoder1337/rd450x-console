@@ -174,6 +174,26 @@ func buildValidatePacket(token, clientIP, username, mac string) []byte {
 	return buf
 }
 
+// legacyVideoPacketSize is the validate body older firmware expects: the token
+// and client IP fields as in buildValidatePacket, then 8 bytes of which JViewer
+// sets only the first, to 6. Taken from a capture of that firmware's JViewer.
+const legacyVideoPacketSize = 203
+
+func buildLegacyValidatePacket(token, clientIP string) []byte {
+	const (
+		tokenField = 130
+		ipField    = 65
+	)
+	h := header{Type: opValidateVideo, Size: legacyVideoPacketSize}
+	buf := make([]byte, HeaderSize+legacyVideoPacketSize)
+	copy(buf, h.marshal())
+	body := buf[HeaderSize:]
+	putFixed(body[1:tokenField], token)
+	putFixed(body[tokenField:tokenField+ipField], clientIP)
+	body[tokenField+ipField] = 6
+	return buf
+}
+
 // localAddrInfo returns the local IP and MAC (dash-separated) for the connection,
 // used to populate the validate packet. Best-effort; blanks on failure.
 func localAddrInfo(conn net.Conn) (ip, mac string) {
